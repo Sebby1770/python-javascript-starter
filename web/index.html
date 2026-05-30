@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaskPulse</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="panel composer" aria-labelledby="new-task-title">
+        <div>
+          <p class="eyebrow">Python + JavaScript</p>
+          <h1 id="new-task-title">TaskPulse</h1>
+        </div>
+
+        <form data-task-form class="task-form">
+          <label>
+            Task
+            <input name="title" type="text" placeholder="Design the API route" required />
+          </label>
+
+          <label>
+            Owner
+            <input name="owner" type="text" placeholder="Seb" />
+          </label>
+
+          <div class="form-grid">
+            <label>
+              Priority
+              <select name="priority">
+                <option value="high">High</option>
+                <option value="medium" selected>Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+
+            <label>
+              Minutes
+              <input name="minutes" type="number" value="25" min="1" max="240" />
+            </label>
+          </div>
+
+          <button type="submit">Add task</button>
+        </form>
+
+        <p data-status class="status" role="status">Starting...</p>
+      </section>
+
+      <section class="task-board" aria-label="Task board">
+        <div data-task-list class="task-list"></div>
+      </section>
+    </main>
+
+    <template data-task-template>
+      <article class="task-card">
+        <span class="priority-dot" aria-hidden="true"></span>
+        <div>
+          <h2 data-task-title></h2>
+          <p data-task-owner></p>
+        </div>
+        <p data-task-summary></p>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "taskpulse",
+  "version": "0.1.0",
+  "description": "A tiny Python API and JavaScript frontend starter.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test web/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

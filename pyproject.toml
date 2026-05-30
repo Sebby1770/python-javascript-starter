@@ -1,0 +1,13 @@
+[project]
+name = "taskpulse"
+version = "0.1.0"
+description = "A tiny Python API and JavaScript frontend starter."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Sebastian Forbes" }
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
