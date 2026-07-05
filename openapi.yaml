@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: TaskPulse API
+  version: 2.0.0
+  description: Python standard-library API for the TaskPulse kanban task board.
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+  /api/openapi:
+    get:
+      summary: OpenAPI specification
+      responses:
+        "200":
+          description: YAML OpenAPI document
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/tasks:
+    get:
+      summary: List tasks
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+    post:
+      summary: Create task
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskInput"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/tasks/export:
+    get:
+      summary: Export all tasks as JSON download
+      responses:
+        "200":
+          description: JSON file download
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+  /api/tasks/import:
+    post:
+      summary: Replace all tasks from JSON array
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+      responses:
+        "200":
+          description: Tasks imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      summary: Update or toggle a task
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Delete a task
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Task deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/stats:
+    get:
+      summary: Task statistics
+      responses:
+        "200":
+          description: Aggregated stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    $ref: "#/components/schemas/Stats"
+  /ws:
+    get:
+      summary: WebSocket live sync
+      description: Upgrade to WebSocket; server broadcasts `{"event":"tasks_changed"}` on mutations.
+      responses:
+        "101":
+          description: Switching Protocols
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    Task:
+      type: object
+      required:
+        - id
+        - title
+        - owner
+        - priority
+        - minutes
+        - done
+        - status
+        - tags
+        - created_at
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        owner:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        minutes:
+          type: integer
+          minimum: 1
+        done:
+          type: boolean
+        status:
+          type: string
+          enum: [todo, doing, done]
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    TaskInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        owner:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        minutes:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [todo, doing, done]
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        tags:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: string
+    TaskUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        owner:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        minutes:
+          type: integer
+          minimum: 1
+        done:
+          type: boolean
+        status:
+          type: string
+          enum: [todo, doing, done]
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        tags:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: string
+    Stats:
+      type: object
+      properties:
+        total:
+          type: integer
+        completed:
+          type: integer
+        pending:
+          type: integer
+        minutes_by_priority:
+          type: object
+          properties:
+            high:
+              type: integer
+            medium:
+              type: integer
+            low:
+              type: integer
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    NotFound:
+      description: Task not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string

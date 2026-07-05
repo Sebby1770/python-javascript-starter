@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from itertools import count
 from pathlib import Path
 from threading import Lock
-from typing import Iterable
+from typing import Iterable, Protocol
 
 
 VALID_PRIORITIES = {"low", "medium", "high"}
+VALID_STATUSES = {"todo", "doing", "done"}
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 DEFAULT_TASKS: list[dict[str, object]] = [
     {
@@ -17,18 +21,21 @@ DEFAULT_TASKS: list[dict[str, object]] = [
         "owner": "Seb",
         "priority": "high",
         "minutes": 35,
+        "tags": ["api", "backend"],
     },
     {
         "title": "Polish the JavaScript UI",
         "owner": "Frontend",
         "priority": "medium",
         "minutes": 25,
+        "tags": ["frontend"],
     },
     {
         "title": "Ship the first GitHub commit",
         "owner": "Codex",
         "priority": "low",
         "minutes": 15,
+        "tags": ["release"],
     },
 ]
 
@@ -41,12 +48,143 @@ class Task:
     priority: str = "medium"
     minutes: int = 25
     done: bool = False
+    status: str = "todo"
+    due_date: str | None = None
+    tags: list[str] = field(default_factory=list)
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+class TaskStoreProtocol(Protocol):
+    def list_tasks(self) -> list[dict[str, object]]: ...
+
+    def add_task(
+        self,
+        *,
+        title: str,
+        owner: str = "Unassigned",
+        priority: str = "medium",
+        minutes: int = 25,
+        due_date: str | None = None,
+        tags: list[str] | None = None,
+        status: str = "todo",
+    ) -> dict[str, object]: ...
+
+    def toggle_task(self, task_id: int) -> dict[str, object]: ...
+
+    def delete_task(self, task_id: int) -> dict[str, object]: ...
+
+    def update_task(self, task_id: int, fields: dict[str, object]) -> dict[str, object]: ...
+
+    def get_stats(self) -> dict[str, object]: ...
+
+    def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]: ...
+
+
+def validate_due_date(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    due_date = str(value).strip()
+    if not ISO_DATE_RE.match(due_date):
+        raise ValueError("Due date must be an ISO date string (YYYY-MM-DD).")
+    try:
+        date.fromisoformat(due_date)
+    except ValueError as exc:
+        raise ValueError("Due date must be an ISO date string (YYYY-MM-DD).") from exc
+    return due_date
+
+
+def normalise_tags(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = value.split(",")
+    elif isinstance(value, list):
+        parts = [str(item) for item in value]
+    else:
+        raise ValueError("Tags must be a list or comma-separated string.")
+
+    tags: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        tag = part.strip().lower()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag)
+    return tags
+
+
+def validate_status(value: object, *, done: bool | None = None) -> str:
+    status = str(value).lower().strip()
+    if status not in VALID_STATUSES:
+        raise ValueError("Status must be todo, doing, or done.")
+    if done is True:
+        return "done"
+    if done is False and status == "done":
+        return "todo"
+    return status
+
+
+def sync_done_and_status(*, done: bool, status: str) -> tuple[bool, str]:
+    if status == "done":
+        return True, "done"
+    if done:
+        return True, "done"
+    if status not in VALID_STATUSES:
+        status = "todo"
+    return done, status
+
+
+def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
+    if "title" in fields:
+        title = str(fields["title"]).strip()
+        if not title:
+            raise ValueError("Task title is required.")
+        task.title = title
+
+    if "owner" in fields:
+        task.owner = str(fields["owner"]).strip() or "Unassigned"
+
+    if "priority" in fields:
+        priority = str(fields["priority"]).lower().strip()
+        if priority not in VALID_PRIORITIES:
+            raise ValueError("Priority must be low, medium, or high.")
+        task.priority = priority
+
+    if "minutes" in fields:
+        minutes = int(fields["minutes"])
+        if minutes < 1:
+            raise ValueError("Minutes must be at least 1.")
+        task.minutes = minutes
+
+    if "due_date" in fields:
+        task.due_date = validate_due_date(fields["due_date"])
+
+    if "tags" in fields:
+        task.tags = normalise_tags(fields["tags"])
+
+    status_updated = False
+    if "status" in fields:
+        task.status = validate_status(fields["status"])
+        status_updated = True
+
+    if "done" in fields:
+        task.done = bool(fields["done"])
+
+    if status_updated and task.status == "done":
+        task.done = True
+    elif "done" in fields:
+        if task.done:
+            task.status = "done"
+        elif task.status == "done":
+            task.status = "todo"
+
+    task.done, task.status = sync_done_and_status(done=task.done, status=task.status)
 
 
 class TaskStore:
@@ -75,10 +213,16 @@ class TaskStore:
         owner: str = "Unassigned",
         priority: str = "medium",
         minutes: int = 25,
+        due_date: str | None = None,
+        tags: list[str] | None = None,
+        status: str = "todo",
     ) -> dict[str, object]:
         title = title.strip()
         owner = owner.strip() or "Unassigned"
         priority = priority.lower().strip()
+        due_date = validate_due_date(due_date)
+        tags = normalise_tags(tags or [])
+        status = validate_status(status)
 
         if not title:
             raise ValueError("Task title is required.")
@@ -87,6 +231,8 @@ class TaskStore:
         if minutes < 1:
             raise ValueError("Minutes must be at least 1.")
 
+        done, status = sync_done_and_status(done=False, status=status)
+
         with self._lock:
             task = Task(
                 id=next(self._ids),
@@ -94,6 +240,10 @@ class TaskStore:
                 owner=owner,
                 priority=priority,
                 minutes=minutes,
+                done=done,
+                status=status,
+                due_date=due_date,
+                tags=tags,
             )
             self._tasks.append(task)
             self._save_locked()
@@ -103,6 +253,7 @@ class TaskStore:
         with self._lock:
             task = self._get_task_locked(task_id)
             task.done = not task.done
+            task.status = "done" if task.done else "todo"
             self._save_locked()
             return task.to_dict()
 
@@ -117,31 +268,7 @@ class TaskStore:
     def update_task(self, task_id: int, fields: dict[str, object]) -> dict[str, object]:
         with self._lock:
             task = self._get_task_locked(task_id)
-
-            if "title" in fields:
-                title = str(fields["title"]).strip()
-                if not title:
-                    raise ValueError("Task title is required.")
-                task.title = title
-
-            if "owner" in fields:
-                task.owner = str(fields["owner"]).strip() or "Unassigned"
-
-            if "priority" in fields:
-                priority = str(fields["priority"]).lower().strip()
-                if priority not in VALID_PRIORITIES:
-                    raise ValueError("Priority must be low, medium, or high.")
-                task.priority = priority
-
-            if "minutes" in fields:
-                minutes = int(fields["minutes"])
-                if minutes < 1:
-                    raise ValueError("Minutes must be at least 1.")
-                task.minutes = minutes
-
-            if "done" in fields:
-                task.done = bool(fields["done"])
-
+            apply_task_fields(task, fields)
             self._save_locked()
             return task.to_dict()
 
@@ -160,6 +287,25 @@ class TaskStore:
                 "pending": total - completed,
                 "minutes_by_priority": minutes_by_priority,
             }
+
+    def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not isinstance(tasks, list):
+            raise ValueError("Import payload must be a JSON array of tasks.")
+
+        parsed: list[Task] = []
+        max_id = 0
+        for item in tasks:
+            if not isinstance(item, dict):
+                raise ValueError("Each imported task must be a JSON object.")
+            task = self._task_from_dict(item, assign_id=False)
+            parsed.append(task)
+            max_id = max(max_id, task.id)
+
+        with self._lock:
+            self._tasks = parsed
+            self._ids = count(max_id + 1)
+            self._save_locked()
+            return [task.to_dict() for task in self._tasks]
 
     def load_from_file(self, path: Path) -> None:
         with self._lock:
@@ -190,14 +336,28 @@ class TaskStore:
             self._tasks.append(self._task_from_dict(task))
             self._ids = count(max((item.id for item in self._tasks), default=0) + 1)
 
-    def _task_from_dict(self, task: dict[str, object]) -> Task:
+    def _task_from_dict(
+        self,
+        task: dict[str, object],
+        *,
+        assign_id: bool = True,
+    ) -> Task:
+        done = bool(task.get("done", False))
+        status = str(task.get("status", "done" if done else "todo")).lower().strip()
+        if status not in VALID_STATUSES:
+            status = "done" if done else "todo"
+        done, status = sync_done_and_status(done=done, status=status)
+
         return Task(
-            id=int(task.get("id", next(self._ids))),
+            id=int(task.get("id", next(self._ids) if assign_id else 0)),
             title=str(task.get("title", "")),
             owner=str(task.get("owner", "Unassigned")),
             priority=str(task.get("priority", "medium")),
             minutes=int(task.get("minutes", 25)),
-            done=bool(task.get("done", False)),
+            done=done,
+            status=status,
+            due_date=validate_due_date(task.get("due_date")),
+            tags=normalise_tags(task.get("tags", [])),
             created_at=str(
                 task.get(
                     "created_at",
@@ -229,7 +389,22 @@ def default_data_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "tasks.json"
 
 
-def create_default_store(data_path: Path | None = None) -> TaskStore:
+def default_sqlite_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "tasks.db"
+
+
+def create_store(
+    *,
+    driver: str | None = None,
+    data_path: Path | None = None,
+) -> TaskStoreProtocol:
+    selected = (driver or os.environ.get("STORAGE_DRIVER", "json")).lower().strip()
+
+    if selected == "sqlite":
+        from .store_sqlite import SqliteTaskStore
+
+        return SqliteTaskStore(db_path=data_path or default_sqlite_path())
+
     path = data_path or default_data_path()
     store = TaskStore(data_path=path)
 
@@ -242,6 +417,11 @@ def create_default_store(data_path: Path | None = None) -> TaskStore:
                 owner=str(task["owner"]),
                 priority=str(task["priority"]),
                 minutes=int(task["minutes"]),
+                tags=list(task.get("tags", [])),
             )
 
     return store
+
+
+def create_default_store(data_path: Path | None = None) -> TaskStoreProtocol:
+    return create_store(data_path=data_path)

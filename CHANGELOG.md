@@ -2,6 +2,29 @@
 
 All notable changes to TaskPulse are documented in this file.
 
+## [2.0.0] - 2026-07-05
+
+### Added
+
+- Task fields: `due_date` (ISO date), `tags` (string list), and `status` (`todo` | `doing` | `done`).
+- Kanban board UI with drag-and-drop columns and status buttons.
+- Inline task title editing saved via `PATCH`.
+- Export/import endpoints: `GET /api/tasks/export` and `POST /api/tasks/import`.
+- WebSocket live sync at `/ws` broadcasting `tasks_changed` events.
+- SQLite storage driver via `STORAGE_DRIVER=sqlite` and `store_sqlite.py`.
+- `create_store()` factory selecting JSON or SQLite backends.
+- OpenAPI specification at `openapi.yaml` served by `GET /api/openapi`.
+- Optional `API_KEY` auth for mutating routes using `X-API-Key`.
+- Frontend filters for tag and due today.
+- GitHub Actions CI workflow for Python and JavaScript tests.
+- Dockerfile based on Python 3.12 slim.
+
+### Changed
+
+- Task board layout moved from priority grid to status-based kanban columns.
+- Default sample tasks now include tags.
+- README and tests expanded for v2 API and UI behavior.
+
 ## [2026-07-05]
 
 ### Added

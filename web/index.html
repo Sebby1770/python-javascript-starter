@@ -58,6 +58,16 @@
               </label>
             </div>
 
+            <label>
+              Due date
+              <input name="due_date" type="date" />
+            </label>
+
+            <label>
+              Tags
+              <input name="tags" type="text" placeholder="api, frontend, release" />
+            </label>
+
             <button type="submit" class="primary-button">Add task</button>
           </form>
 
@@ -106,14 +116,61 @@
             <input
               data-search
               type="search"
-              placeholder="Search by title, owner, or priority..."
+              placeholder="Search by title, owner, tag, or priority..."
               autocomplete="off"
             />
           </label>
+
+          <div class="toolbar-filters">
+            <label class="filter-field">
+              <span class="visually-hidden">Filter by tag</span>
+              <select data-tag-filter>
+                <option value="">All tags</option>
+              </select>
+            </label>
+
+            <label class="filter-checkbox">
+              <input data-due-today-filter type="checkbox" />
+              Due today
+            </label>
+          </div>
+
+          <div class="toolbar-actions">
+            <button type="button" class="ghost-button" data-export-tasks>Export</button>
+            <label class="import-button ghost-button">
+              Import
+              <input data-import-tasks type="file" accept="application/json,.json" hidden />
+            </label>
+          </div>
         </div>
 
         <p data-empty-state class="empty-state" hidden>No tasks yet. Add one to get started.</p>
-        <div data-task-list class="task-list"></div>
+
+        <div data-task-board class="kanban-board">
+          <section class="kanban-column" data-status-column="todo">
+            <header class="kanban-column-header">
+              <h2>To Do</h2>
+              <span data-column-count class="column-count">0</span>
+            </header>
+            <div data-column-list class="kanban-column-list"></div>
+          </section>
+
+          <section class="kanban-column" data-status-column="doing">
+            <header class="kanban-column-header">
+              <h2>Doing</h2>
+              <span data-column-count class="column-count">0</span>
+            </header>
+            <div data-column-list class="kanban-column-list"></div>
+          </section>
+
+          <section class="kanban-column" data-status-column="done">
+            <header class="kanban-column-header">
+              <h2>Done</h2>
+              <span data-column-count class="column-count">0</span>
+            </header>
+            <div data-column-list class="kanban-column-list"></div>
+          </section>
+        </div>
       </section>
     </main>
 
@@ -121,12 +178,18 @@
       <article class="task-card">
         <span class="priority-dot" aria-hidden="true"></span>
         <div class="task-card-body">
-          <h2 data-task-title></h2>
+          <h3 data-task-title class="task-card-title" title="Click to edit"></h3>
           <p data-task-owner></p>
         </div>
+        <p data-task-due class="task-card-due" hidden></p>
+        <div data-task-tags class="task-card-tags"></div>
         <p data-task-summary class="task-card-summary"></p>
         <div class="task-card-actions">
-          <button type="button" class="ghost-button" data-complete-task>Complete</button>
+          <div class="status-buttons" role="group" aria-label="Move task">
+            <button type="button" class="status-button" data-set-status="todo">To Do</button>
+            <button type="button" class="status-button" data-set-status="doing">Doing</button>
+            <button type="button" class="status-button" data-set-status="done">Done</button>
+          </div>
           <button type="button" class="danger-button" data-delete-task>Delete</button>
         </div>
       </article>

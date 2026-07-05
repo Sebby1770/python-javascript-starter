@@ -4,15 +4,54 @@ const priorityOrder = {
   low: 2,
 };
 
+const statusOrder = {
+  todo: 0,
+  doing: 1,
+  done: 2,
+};
+
 export function normaliseTask(task) {
+  const done = Boolean(task.done);
+  let status = String(task.status || (done ? "done" : "todo")).toLowerCase();
+  if (statusOrder[status] === undefined) {
+    status = done ? "done" : "todo";
+  }
+  if (done) {
+    status = "done";
+  }
+
+  const tags = Array.isArray(task.tags)
+    ? task.tags.map((tag) => String(tag).trim().toLowerCase()).filter(Boolean)
+    : String(task.tags || "")
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean);
+
   return {
     id: Number(task.id),
     title: String(task.title || "Untitled task"),
     owner: String(task.owner || "Unassigned"),
     priority: priorityOrder[task.priority] === undefined ? "medium" : task.priority,
     minutes: Math.max(1, Number(task.minutes || 25)),
-    done: Boolean(task.done),
+    done,
+    status,
+    dueDate: task.due_date || task.dueDate || null,
+    tags: [...new Set(tags)],
   };
+}
+
+export function parseTagsInput(value) {
+  const tags = [];
+  const seen = new Set();
+  for (const part of String(value || "").split(",")) {
+    const tag = part.trim().toLowerCase();
+    if (!tag || seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
 }
 
 export function groupByPriority(tasks) {
@@ -30,28 +69,97 @@ export function groupByPriority(tasks) {
     );
 }
 
+export function groupByStatus(tasks) {
+  return tasks
+    .map(normaliseTask)
+    .sort((first, second) => priorityOrder[first.priority] - priorityOrder[second.priority])
+    .reduce(
+      (groups, task) => {
+        groups[task.status].push(task);
+        return groups;
+      },
+      { todo: [], doing: [], done: [] },
+    );
+}
+
 export function formatMinutes(minutes) {
   const value = Math.max(0, Number(minutes) || 0);
   return `${value} ${value === 1 ? "minute" : "minutes"}`;
 }
 
-export function taskSummary(task) {
-  const cleanTask = normaliseTask(task);
-  return `${cleanTask.priority} priority · ${formatMinutes(cleanTask.minutes)}`;
+export function formatDueDate(dueDate) {
+  if (!dueDate) {
+    return null;
+  }
+  const parsed = new Date(`${dueDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return dueDate;
+  }
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
-export function filterTasks(tasks, query) {
-  const needle = String(query || "").trim().toLowerCase();
-  if (!needle) {
-    return tasks.map(normaliseTask);
+export function isDueToday(dueDate, referenceDate = new Date()) {
+  if (!dueDate) {
+    return false;
   }
+  const due = new Date(`${dueDate}T00:00:00`);
+  return (
+    due.getFullYear() === referenceDate.getFullYear() &&
+    due.getMonth() === referenceDate.getMonth() &&
+    due.getDate() === referenceDate.getDate()
+  );
+}
+
+export function taskSummary(task) {
+  const cleanTask = normaliseTask(task);
+  const parts = [`${cleanTask.priority} priority`, formatMinutes(cleanTask.minutes)];
+  const dueLabel = formatDueDate(cleanTask.dueDate);
+  if (dueLabel) {
+    parts.push(`due ${dueLabel}`);
+  }
+  return parts.join(" · ");
+}
+
+export function filterTasks(tasks, query, options = {}) {
+  const needle = String(query || "").trim().toLowerCase();
+  const tagFilter = String(options.tag || "").trim().toLowerCase();
+  const dueTodayOnly = Boolean(options.dueToday);
+  const referenceDate = options.referenceDate || new Date();
 
   return tasks
     .map(normaliseTask)
     .filter((task) => {
-      const haystack = [task.title, task.owner, task.priority].join(" ").toLowerCase();
+      if (dueTodayOnly && !isDueToday(task.dueDate, referenceDate)) {
+        return false;
+      }
+
+      if (tagFilter && !task.tags.includes(tagFilter)) {
+        return false;
+      }
+
+      if (!needle) {
+        return true;
+      }
+
+      const haystack = [task.title, task.owner, task.priority, task.status, ...task.tags]
+        .join(" ")
+        .toLowerCase();
       return haystack.includes(needle);
     });
+}
+
+export function collectTags(tasks) {
+  const tags = new Set();
+  for (const task of tasks.map(normaliseTask)) {
+    for (const tag of task.tags) {
+      tags.add(tag);
+    }
+  }
+  return [...tags].sort();
 }
 
 export function computeStats(tasks) {
