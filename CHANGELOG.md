@@ -2,6 +2,23 @@
 
 All notable changes to TaskPulse are documented in this file.
 
+## [4.0.0] - 2026-07-05
+
+### Added
+
+- Time tracking with `actual_minutes` and `started_at` on tasks; start/stop timer on cards (separate from Pomodoro).
+- Activity feed storing the last 50 events (`task_created`, `task_completed`, `task_moved`, etc.) with `GET /api/activity`.
+- Task templates: built-in Bug fix, Feature, Meeting, and Review presets plus custom templates in `localStorage`.
+- Keyboard shortcuts: `n` new task, `/` search, `1/2/3` kanban column filter, `?` shortcuts modal, `f` focus mode, `Esc` close overlays.
+- Weekly review sidebar panel for overdue, stale doing (>3 days), and untagged high-priority tasks.
+- Undo stack for the last 10 mutating actions with `POST /api/undo` and header undo button.
+- Sprint field (`sprint`) with sprint filter dropdown and per-sprint stats.
+- Stats dashboard now shows estimated vs actual minute totals.
+
+### Changed
+
+- Task model, JSON/SQLite stores, OpenAPI spec, frontend UI, tests, and README updated for v4 fields and routes.
+
 ## [3.0.0] - 2026-07-05
 
 ### Added

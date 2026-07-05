@@ -166,6 +166,83 @@ class TaskStoreTest(unittest.TestCase):
             stats["minutes_by_priority"],
             {"high": 30, "medium": 20, "low": 10},
         )
+        self.assertEqual(stats["estimated_minutes"], 60)
+        self.assertEqual(stats["actual_minutes"], 0)
+
+    def test_add_task_with_sprint_and_time_tracking_fields(self):
+        store = TaskStore()
+        task = store.add_task(title="Sprint task", sprint="Sprint 12")
+
+        self.assertEqual(task["sprint"], "Sprint 12")
+        self.assertEqual(task["actual_minutes"], 0)
+        self.assertIsNone(task["started_at"])
+
+    def test_update_task_records_time_tracking(self):
+        store = TaskStore()
+        created = store.add_task(title="Timed")
+
+        started = store.update_task(
+            created["id"],
+            {"started_at": "2026-07-05T10:00:00+00:00"},
+        )
+        self.assertEqual(started["started_at"], "2026-07-05T10:00:00+00:00")
+
+        stopped = store.update_task(
+            created["id"],
+            {"actual_minutes": 15, "started_at": None},
+        )
+        self.assertEqual(stopped["actual_minutes"], 15)
+        self.assertIsNone(stopped["started_at"])
+
+    def test_get_stats_includes_sprint_breakdown(self):
+        store = TaskStore()
+        first = store.add_task(title="A", sprint="Sprint 1", minutes=10)
+        store.update_task(first["id"], {"actual_minutes": 5})
+        store.add_task(title="B", sprint="Sprint 1", minutes=20)
+        store.add_task(title="C", minutes=15)
+
+        stats = store.get_stats()
+
+        self.assertEqual(stats["by_sprint"]["Sprint 1"]["total"], 2)
+        self.assertEqual(stats["by_sprint"]["Sprint 1"]["estimated_minutes"], 30)
+        self.assertEqual(stats["by_sprint"]["Sprint 1"]["actual_minutes"], 5)
+        self.assertEqual(stats["by_sprint"]["unassigned"]["total"], 1)
+
+    def test_activity_log_records_events(self):
+        store = TaskStore()
+        created = store.add_task(title="Feed me")
+        store.update_task(created["id"], {"status": "doing"})
+        store.delete_task(created["id"])
+
+        activity = store.get_activity()
+        events = [item["event"] for item in activity]
+
+        self.assertEqual(events[0], "task_deleted")
+        self.assertIn("task_created", events)
+        self.assertIn("task_moved", events)
+        self.assertLessEqual(len(activity), 50)
+
+    def test_undo_reverts_last_action(self):
+        store = TaskStore()
+        created = store.add_task(title="Undo me", priority="high")
+        store.update_task(created["id"], {"title": "Changed"})
+
+        result = store.undo_last()
+
+        self.assertEqual(result["undone"], "update")
+        self.assertEqual(store.list_tasks()[0]["title"], "Undo me")
+
+    def test_undo_reverts_add_and_delete(self):
+        store = TaskStore()
+        store.add_task(title="Temporary")
+        store.undo_last()
+        self.assertEqual(store.list_tasks(), [])
+
+        kept = store.add_task(title="Keep")
+        deleted = store.delete_task(kept["id"])
+        self.assertEqual(deleted["title"], "Keep")
+        store.undo_last()
+        self.assertEqual(store.list_tasks()[0]["title"], "Keep")
 
     def test_import_tasks_replaces_existing_tasks(self):
         store = TaskStore()

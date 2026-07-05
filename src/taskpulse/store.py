@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -14,7 +15,19 @@ from typing import Iterable, Protocol
 VALID_PRIORITIES = {"low", "medium", "high"}
 VALID_STATUSES = {"todo", "doing", "done"}
 VALID_RECURRENCES = {"daily", "weekly", "monthly"}
+VALID_ACTIVITY_EVENTS = {
+    "task_created",
+    "task_completed",
+    "task_moved",
+    "task_updated",
+    "task_deleted",
+    "task_imported",
+    "time_tracked",
+    "undo",
+}
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MAX_ACTIVITY_EVENTS = 50
+MAX_UNDO_ACTIONS = 10
 
 DEFAULT_TASKS: list[dict[str, object]] = [
     {
@@ -55,12 +68,34 @@ class Task:
     blocked_by: list[int] = field(default_factory=list)
     recurrence: str | None = None
     last_recurred_at: str | None = None
+    actual_minutes: int = 0
+    started_at: str | None = None
+    sprint: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class ActivityEvent:
+    event: str
+    task_id: int | None
+    message: str
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class UndoAction:
+    action: str
+    payload: dict[str, object]
 
 
 class TaskStoreProtocol(Protocol):
@@ -89,6 +124,10 @@ class TaskStoreProtocol(Protocol):
     def get_stats(self) -> dict[str, object]: ...
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]: ...
+
+    def get_activity(self) -> list[dict[str, object]]: ...
+
+    def undo_last(self) -> dict[str, object]: ...
 
 
 def validate_due_date(value: object) -> str | None:
@@ -155,6 +194,15 @@ def validate_recurrence(value: object) -> str | None:
     return recurrence
 
 
+def validate_sprint(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    sprint = str(value).strip()
+    if not sprint:
+        return None
+    return sprint
+
+
 def normalise_blocked_by(value: object) -> list[int]:
     if value is None:
         return []
@@ -204,6 +252,22 @@ def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
 
     if "recurrence" in fields:
         task.recurrence = validate_recurrence(fields["recurrence"])
+
+    if "actual_minutes" in fields:
+        actual_minutes = int(fields["actual_minutes"])
+        if actual_minutes < 0:
+            raise ValueError("actual_minutes must be at least 0.")
+        task.actual_minutes = actual_minutes
+
+    if "started_at" in fields:
+        started_at = fields["started_at"]
+        if started_at is None or started_at == "":
+            task.started_at = None
+        else:
+            task.started_at = str(started_at)
+
+    if "sprint" in fields:
+        task.sprint = validate_sprint(fields["sprint"])
 
     status_updated = False
     if "status" in fields:
@@ -267,6 +331,8 @@ class TaskStore:
         self._ids = count(1)
         self._lock = Lock()
         self._data_path = data_path
+        self._activity: list[ActivityEvent] = []
+        self._undo_stack: list[UndoAction] = []
 
         for task in initial_tasks or []:
             self._append_task_from_dict(task)
@@ -287,6 +353,7 @@ class TaskStore:
         status: str = "todo",
         blocked_by: list[int] | None = None,
         recurrence: str | None = None,
+        sprint: str | None = None,
     ) -> dict[str, object]:
         title = title.strip()
         owner = owner.strip() or "Unassigned"
@@ -296,6 +363,7 @@ class TaskStore:
         status = validate_status(status)
         blocked_by = normalise_blocked_by(blocked_by or [])
         recurrence = validate_recurrence(recurrence)
+        sprint = validate_sprint(sprint)
 
         if not title:
             raise ValueError("Task title is required.")
@@ -324,16 +392,37 @@ class TaskStore:
                 tags=tags,
                 blocked_by=blocked_by,
                 recurrence=recurrence,
+                sprint=sprint,
             )
             self._tasks.append(task)
+            self._push_undo_locked("add", {"task_id": task.id})
+            self._log_activity_locked(
+                "task_created",
+                task.id,
+                f'Created "{task.title}"',
+            )
             self._save_locked()
             return task.to_dict()
 
     def toggle_task(self, task_id: int) -> dict[str, object]:
         with self._lock:
             task = self._get_task_locked(task_id)
+            previous = task.to_dict()
             task.done = not task.done
             task.status = "done" if task.done else "todo"
+            self._push_undo_locked("toggle", {"task_id": task_id, "previous": previous})
+            if task.done:
+                self._log_activity_locked(
+                    "task_completed",
+                    task.id,
+                    f'Completed "{task.title}"',
+                )
+            else:
+                self._log_activity_locked(
+                    "task_updated",
+                    task.id,
+                    f'Reopened "{task.title}"',
+                )
             self._save_locked()
             return task.to_dict()
 
@@ -341,6 +430,12 @@ class TaskStore:
         with self._lock:
             task = self._get_task_locked(task_id)
             removed = task.to_dict()
+            self._push_undo_locked("delete", {"task": removed})
+            self._log_activity_locked(
+                "task_deleted",
+                task.id,
+                f'Deleted "{task.title}"',
+            )
             self._tasks = [item for item in self._tasks if item.id != task_id]
             self._save_locked()
             return removed
@@ -348,6 +443,8 @@ class TaskStore:
     def update_task(self, task_id: int, fields: dict[str, object]) -> dict[str, object]:
         with self._lock:
             task = self._get_task_locked(task_id)
+            previous = task.to_dict()
+            previous_status = task.status
             tasks_by_id = {item.id: item for item in self._tasks}
 
             if "blocked_by" in fields:
@@ -370,6 +467,38 @@ class TaskStore:
                     )
 
             apply_task_fields(task, fields)
+            self._push_undo_locked(
+                "update",
+                {"task_id": task_id, "previous": previous},
+            )
+
+            if "started_at" in fields or "actual_minutes" in fields:
+                if fields.get("started_at") is None and previous.get("started_at"):
+                    self._log_activity_locked(
+                        "time_tracked",
+                        task.id,
+                        f'Tracked time on "{task.title}" ({task.actual_minutes} min)',
+                    )
+            elif "status" in fields and task.status != previous_status:
+                if task.status == "done":
+                    self._log_activity_locked(
+                        "task_completed",
+                        task.id,
+                        f'Completed "{task.title}"',
+                    )
+                else:
+                    self._log_activity_locked(
+                        "task_moved",
+                        task.id,
+                        f'Moved "{task.title}" to {task.status}',
+                    )
+            else:
+                self._log_activity_locked(
+                    "task_updated",
+                    task.id,
+                    f'Updated "{task.title}"',
+                )
+
             self._save_locked()
             return task.to_dict()
 
@@ -378,15 +507,45 @@ class TaskStore:
             total = len(self._tasks)
             completed = sum(1 for task in self._tasks if task.done)
             minutes_by_priority = {priority: 0 for priority in VALID_PRIORITIES}
+            estimated_minutes = 0
+            actual_minutes = 0
+            by_sprint: dict[str, dict[str, object]] = {}
 
             for task in self._tasks:
                 minutes_by_priority[task.priority] += task.minutes
+                estimated_minutes += task.minutes
+                actual_minutes += task.actual_minutes
+
+                sprint_key = task.sprint or "unassigned"
+                if sprint_key not in by_sprint:
+                    by_sprint[sprint_key] = {
+                        "total": 0,
+                        "completed": 0,
+                        "pending": 0,
+                        "estimated_minutes": 0,
+                        "actual_minutes": 0,
+                    }
+                sprint_stats = by_sprint[sprint_key]
+                sprint_stats["total"] = int(sprint_stats["total"]) + 1
+                if task.done:
+                    sprint_stats["completed"] = int(sprint_stats["completed"]) + 1
+                else:
+                    sprint_stats["pending"] = int(sprint_stats["pending"]) + 1
+                sprint_stats["estimated_minutes"] = (
+                    int(sprint_stats["estimated_minutes"]) + task.minutes
+                )
+                sprint_stats["actual_minutes"] = (
+                    int(sprint_stats["actual_minutes"]) + task.actual_minutes
+                )
 
             return {
                 "total": total,
                 "completed": completed,
                 "pending": total - completed,
                 "minutes_by_priority": minutes_by_priority,
+                "estimated_minutes": estimated_minutes,
+                "actual_minutes": actual_minutes,
+                "by_sprint": by_sprint,
             }
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -403,10 +562,82 @@ class TaskStore:
             max_id = max(max_id, task.id)
 
         with self._lock:
+            previous_tasks = [task.to_dict() for task in self._tasks]
+            self._push_undo_locked("import", {"tasks": previous_tasks})
             self._tasks = parsed
             self._ids = count(max_id + 1)
+            self._log_activity_locked(
+                "task_imported",
+                None,
+                f"Imported {len(parsed)} tasks",
+            )
             self._save_locked()
             return [task.to_dict() for task in self._tasks]
+
+    def get_activity(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [event.to_dict() for event in reversed(self._activity)]
+
+    def undo_last(self) -> dict[str, object]:
+        with self._lock:
+            if not self._undo_stack:
+                raise ValueError("Nothing to undo.")
+
+            action = self._undo_stack.pop()
+            result: dict[str, object]
+
+            if action.action == "add":
+                task_id = int(action.payload["task_id"])
+                self._tasks = [task for task in self._tasks if task.id != task_id]
+                result = {"undone": "add", "task_id": task_id}
+
+            elif action.action == "delete":
+                task_data = copy.deepcopy(action.payload["task"])
+                restored = self._task_from_dict(task_data)
+                self._tasks.append(restored)
+                self._ids = count(max((item.id for item in self._tasks), default=0) + 1)
+                result = {"undone": "delete", "task": restored.to_dict()}
+
+            elif action.action == "update":
+                task_id = int(action.payload["task_id"])
+                previous = copy.deepcopy(action.payload["previous"])
+                task = self._get_task_locked(task_id)
+                restored = self._task_from_dict({**previous, "id": task_id})
+                task_index = next(
+                    index for index, item in enumerate(self._tasks) if item.id == task_id
+                )
+                self._tasks[task_index] = restored
+                result = {"undone": "update", "task": restored.to_dict()}
+
+            elif action.action == "toggle":
+                task_id = int(action.payload["task_id"])
+                previous = copy.deepcopy(action.payload["previous"])
+                task = self._get_task_locked(task_id)
+                restored = self._task_from_dict({**previous, "id": task_id})
+                task_index = next(
+                    index for index, item in enumerate(self._tasks) if item.id == task_id
+                )
+                self._tasks[task_index] = restored
+                result = {"undone": "toggle", "task": restored.to_dict()}
+
+            elif action.action == "import":
+                previous_tasks = copy.deepcopy(action.payload["tasks"])
+                self._tasks = [
+                    self._task_from_dict(item) for item in previous_tasks
+                ]
+                max_id = max((task.id for task in self._tasks), default=0)
+                self._ids = count(max_id + 1)
+                result = {
+                    "undone": "import",
+                    "tasks": [task.to_dict() for task in self._tasks],
+                }
+
+            else:
+                raise ValueError(f"Unknown undo action: {action.action}")
+
+            self._log_activity_locked("undo", None, f"Undid {action.action}")
+            self._save_locked()
+            return result
 
     def load_from_file(self, path: Path) -> None:
         with self._lock:
@@ -466,6 +697,11 @@ class TaskStore:
                 if task.get("last_recurred_at")
                 else None
             ),
+            actual_minutes=max(0, int(task.get("actual_minutes", 0))),
+            started_at=(
+                str(task["started_at"]) if task.get("started_at") else None
+            ),
+            sprint=validate_sprint(task.get("sprint")),
             created_at=str(
                 task.get(
                     "created_at",
@@ -473,6 +709,25 @@ class TaskStore:
                 )
             ),
         )
+
+    def _log_activity_locked(
+        self,
+        event: str,
+        task_id: int | None,
+        message: str,
+    ) -> None:
+        if event not in VALID_ACTIVITY_EVENTS:
+            raise ValueError(f"Unknown activity event: {event}")
+        self._activity.append(
+            ActivityEvent(event=event, task_id=task_id, message=message)
+        )
+        if len(self._activity) > MAX_ACTIVITY_EVENTS:
+            self._activity = self._activity[-MAX_ACTIVITY_EVENTS:]
+
+    def _push_undo_locked(self, action: str, payload: dict[str, object]) -> None:
+        self._undo_stack.append(UndoAction(action=action, payload=payload))
+        if len(self._undo_stack) > MAX_UNDO_ACTIONS:
+            self._undo_stack = self._undo_stack[-MAX_UNDO_ACTIONS:]
 
     def _get_task_locked(self, task_id: int) -> Task:
         for task in self._tasks:
@@ -518,6 +773,7 @@ class TaskStore:
                     tags=list(source.tags),
                     blocked_by=list(source.blocked_by),
                     recurrence=None,
+                    sprint=source.sprint,
                     created_at=now,
                 )
                 self._tasks.append(clone)

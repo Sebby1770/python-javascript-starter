@@ -82,6 +82,42 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(data["parsed"]["minutes"], 15)
         self.assertEqual(data["parsed"]["tags"], ["release"])
 
+    def test_activity_endpoint(self):
+        status, data = self._request("GET", "/api/activity")
+        self.assertEqual(status, 200)
+        self.assertIn("activity", data)
+        self.assertTrue(isinstance(data["activity"], list))
+
+    def test_undo_endpoint_reverts_last_mutation(self):
+        status, created = self._request(
+            "POST",
+            "/api/tasks",
+            payload={"title": "Undo target"},
+        )
+        self.assertEqual(status, 201)
+
+        status, undone = self._request("POST", "/api/undo")
+        self.assertEqual(status, 200)
+        self.assertEqual(undone["result"]["undone"], "add")
+
+        status, tasks = self._request("GET", "/api/tasks")
+        self.assertEqual(status, 200)
+        self.assertFalse(
+            any(task["title"] == "Undo target" for task in tasks["tasks"])
+        )
+
+    def test_stats_include_time_and_sprint_fields(self):
+        self._request(
+            "POST",
+            "/api/tasks",
+            payload={"title": "Sprint stats", "sprint": "Sprint 9", "minutes": 40},
+        )
+        status, data = self._request("GET", "/api/stats")
+        self.assertEqual(status, 200)
+        self.assertIn("estimated_minutes", data["stats"])
+        self.assertIn("actual_minutes", data["stats"])
+        self.assertIn("by_sprint", data["stats"])
+
     def test_api_key_required_for_mutations_when_set(self):
         original = server_module.API_KEY
         server_module.API_KEY = "secret-key"

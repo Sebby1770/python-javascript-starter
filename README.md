@@ -4,12 +4,18 @@ TaskPulse is a small Python and JavaScript starter project. It pairs a standard-
 
 ## Features
 
-- Python HTTP API with health checks, task CRUD, stats, export/import, NLP parse, and OpenAPI docs.
+- Python HTTP API with health checks, task CRUD, stats, export/import, NLP parse, activity feed, undo, and OpenAPI docs.
 - Kanban board with To Do, Doing, and Done columns plus drag-and-drop or status buttons.
-- Task due dates, tags, dependencies (`blocked_by`), recurrence, inline title editing, and filters.
+- Task due dates, tags, sprints, dependencies (`blocked_by`), recurrence, inline title editing, and filters.
 - Natural language quick add: `high priority api task for Seb due Friday 30 min #backend`.
+- Time tracking per task with start/stop timer on cards (separate from Pomodoro).
 - Pomodoro timer per task with countdown overlay and browser notifications.
 - Focus mode fullscreen overlay for one-task-at-a-time deep work.
+- Activity feed showing the last 50 task events with timestamps.
+- Task templates (Bug fix, Feature, Meeting, Review) plus custom templates in `localStorage`.
+- Undo last 10 mutating actions via API or header button.
+- Weekly review panel for overdue, stale doing, and untagged high-priority tasks.
+- Keyboard shortcuts: `n`, `/`, `1/2/3`, `?`, `f`, `Esc`.
 - Burndown chart showing pending task trend over the last 7 days.
 - JSON file persistence by default, with optional SQLite storage.
 - WebSocket live sync and presence ("Desk Fox", "Paper Owl", etc.).
@@ -102,9 +108,11 @@ GET    /api/openapi
 GET    /api/tasks
 GET    /api/tasks/export
 GET    /api/stats
+GET    /api/activity
 POST   /api/tasks
 POST   /api/tasks/parse
 POST   /api/tasks/import
+POST   /api/undo
 PATCH  /api/tasks/{id}
 DELETE /api/tasks/{id}
 WS     /ws
@@ -122,7 +130,10 @@ Example task payload:
   "due_date": "2026-07-10",
   "tags": ["release", "planning"],
   "blocked_by": [2],
-  "recurrence": "weekly"
+  "recurrence": "weekly",
+  "sprint": "Sprint 12",
+  "actual_minutes": 0,
+  "started_at": null
 }
 ```
 
@@ -134,9 +145,11 @@ curl -X POST http://localhost:8000/api/tasks/parse \
   -d '{"text":"high priority api task for Seb due Friday 30 min #backend"}'
 ```
 
-`PATCH /api/tasks/{id}` with an empty body toggles the task's done state. Send a JSON body to update specific fields (`title`, `owner`, `priority`, `minutes`, `done`, `status`, `due_date`, `tags`, `blocked_by`, `recurrence`). Tasks with incomplete blockers cannot move to `doing`.
+`PATCH /api/tasks/{id}` with an empty body toggles the task's done state. Send a JSON body to update specific fields (`title`, `owner`, `priority`, `minutes`, `done`, `status`, `due_date`, `tags`, `blocked_by`, `recurrence`, `sprint`, `actual_minutes`, `started_at`). Tasks with incomplete blockers cannot move to `doing`.
 
 `POST /api/tasks/import` replaces all tasks with a JSON array. `GET /api/tasks/export` downloads the current task list.
+
+`GET /api/activity` returns the last 50 activity events. `POST /api/undo` reverts the most recent mutating action.
 
 WebSocket clients connect to `/ws` and receive:
 
@@ -155,9 +168,31 @@ Stats response shape:
       "high": 35,
       "medium": 25,
       "low": 15
+    },
+    "estimated_minutes": 75,
+    "actual_minutes": 20,
+    "by_sprint": {
+      "Sprint 12": {
+        "total": 2,
+        "completed": 1,
+        "pending": 1,
+        "estimated_minutes": 55,
+        "actual_minutes": 20
+      }
     }
   }
 }
 ```
+
+### Keyboard shortcuts (browser UI)
+
+| Key | Action |
+|-----|--------|
+| `n` | Focus new task form |
+| `/` | Focus search |
+| `1` / `2` / `3` | Filter To Do / Doing / Done columns |
+| `f` | Enter focus mode |
+| `?` | Show shortcuts modal |
+| `Esc` | Close overlays |
 
 OpenAPI is available at [http://localhost:8000/api/openapi](http://localhost:8000/api/openapi).

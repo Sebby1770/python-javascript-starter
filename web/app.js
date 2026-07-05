@@ -6,17 +6,22 @@ import {
   startPomodoro,
   stopPomodoro,
 } from "./pomodoro.js";
+import { allTemplates, templateById } from "./templates.js";
 import {
+  collectSprints,
   collectTags,
   computeStats,
   filterTasks,
   focusQueue,
+  formatActivityTimestamp,
   formatMinutes,
+  formatTimeTracking,
   groupByStatus,
   isTaskBlocked,
   normaliseTask,
   parseTagsInput,
   taskSummary,
+  weeklyReviewItems,
 } from "./tasks.js";
 
 const taskBoard = document.querySelector("[data-task-board]");
@@ -27,7 +32,18 @@ const statusText = document.querySelector("[data-status]");
 const template = document.querySelector("[data-task-template]");
 const searchInput = document.querySelector("[data-search]");
 const tagFilter = document.querySelector("[data-tag-filter]");
+const sprintFilter = document.querySelector("[data-sprint-filter]");
+const statusFilter = document.querySelector("[data-status-filter]");
 const dueTodayFilter = document.querySelector("[data-due-today-filter]");
+const templateSelect = document.querySelector("[data-template-select]");
+const titleInput = document.querySelector("[data-title-input]");
+const sprintSuggestions = document.querySelector("[data-sprint-suggestions]");
+const undoButton = document.querySelector("[data-undo-button]");
+const activityFeed = document.querySelector("[data-activity-feed]");
+const weeklyReviewContent = document.querySelector("[data-weekly-review-content]");
+const sprintStatsList = document.querySelector("[data-sprint-stats]");
+const shortcutsOverlay = document.querySelector("[data-shortcuts-overlay]");
+const closeShortcutsButton = document.querySelector("[data-close-shortcuts]");
 const themeToggle = document.querySelector("[data-theme-toggle]");
 const statsPanel = document.querySelector("[data-stats]");
 const emptyState = document.querySelector("[data-empty-state]");
@@ -57,9 +73,16 @@ let focusIndex = 0;
 let focusInterval = null;
 let focusRemaining = 0;
 let onlineClerks = [];
+let activeTimers = new Map();
+let timerIntervals = new Map();
 
 const THEME_KEY = "taskpulse-theme";
 const API_KEY_STORAGE = "taskpulse-api-key";
+const STATUS_FILTER_KEYS = {
+  1: "todo",
+  2: "doing",
+  3: "done",
+};
 
 function initTheme() {
   const saved = localStorage.getItem(THEME_KEY);
@@ -184,10 +207,39 @@ async function loadTasks() {
     const response = await fetch("/api/tasks");
     const data = await response.json();
     allTasks = data.tasks.map(normaliseTask);
+    syncActiveTimers();
     renderTasks();
+    await loadActivity();
     setStatus("Ready");
   } catch (error) {
     setStatus(`Could not load tasks: ${error.message}`);
+  }
+}
+
+async function loadActivity() {
+  try {
+    const response = await fetch("/api/activity");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    renderActivity(data.activity || []);
+  } catch {
+    // Activity feed is optional during startup.
+  }
+}
+
+function syncActiveTimers() {
+  for (const [taskId, intervalId] of timerIntervals.entries()) {
+    clearInterval(intervalId);
+  }
+  timerIntervals.clear();
+  activeTimers.clear();
+
+  for (const task of allTasks) {
+    if (task.startedAt) {
+      activeTimers.set(task.id, new Date(task.startedAt).getTime());
+    }
   }
 }
 
@@ -202,6 +254,7 @@ async function createTask(event) {
     minutes: Number(formData.get("minutes")),
     due_date: formData.get("due_date") || null,
     tags: parseTagsInput(formData.get("tags")),
+    sprint: String(formData.get("sprint") || "").trim() || null,
     blocked_by: formData.get("blocked_by") ? [Number(formData.get("blocked_by"))] : [],
     recurrence: recurrenceCheckbox.checked ? "daily" : null,
   };
@@ -220,6 +273,7 @@ async function createTask(event) {
 
     taskForm.reset();
     recurrenceCheckbox.checked = false;
+    templateSelect.value = "";
     await loadTasks();
   } catch (error) {
     setStatus(error.message);
@@ -276,6 +330,22 @@ async function updateTask(taskId, fields) {
     }
 
     await loadTasks();
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function undoLastAction() {
+  try {
+    const response = await apiFetch("/api/undo", { method: "POST" });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "Undo failed.");
+    }
+
+    await loadTasks();
+    setStatus("Undid last action.");
   } catch (error) {
     setStatus(error.message);
   }
@@ -384,14 +454,132 @@ function renderStats(tasks) {
   statsPanel.querySelector("[data-stat-total]").textContent = String(stats.total);
   statsPanel.querySelector("[data-stat-completed]").textContent = String(stats.completed);
   statsPanel.querySelector("[data-stat-pending]").textContent = String(stats.pending);
+  statsPanel.querySelector("[data-stat-estimated-minutes]").textContent = formatMinutes(
+    stats.estimatedMinutes,
+  );
+  statsPanel.querySelector("[data-stat-actual-minutes]").textContent = formatMinutes(
+    stats.actualMinutes,
+  );
 
   for (const priority of ["high", "medium", "low"]) {
     const node = statsPanel.querySelector(`[data-stat-minutes-${priority}]`);
     node.textContent = formatMinutes(stats.minutesByPriority[priority]);
   }
 
+  sprintStatsList.replaceChildren();
+  const sprintEntries = Object.entries(stats.bySprint).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  if (!sprintEntries.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No sprint data yet.";
+    sprintStatsList.append(empty);
+  } else {
+    for (const [sprint, sprintStats] of sprintEntries) {
+      const item = document.createElement("li");
+      item.innerHTML = `
+        <span>${sprint}</span>
+        <span>${sprintStats.completed}/${sprintStats.total} · est ${sprintStats.estimatedMinutes}m · actual ${sprintStats.actualMinutes}m</span>
+      `;
+      sprintStatsList.append(item);
+    }
+  }
+
   const history = recordPendingCount(stats.pending);
   renderBurndownChart(burndownChart, history);
+  renderWeeklyReview(tasks);
+}
+
+function renderWeeklyReview(tasks) {
+  const review = weeklyReviewItems(tasks);
+  weeklyReviewContent.replaceChildren();
+
+  const sections = [
+    { key: "overdue", label: "Overdue", items: review.overdue },
+    { key: "staleDoing", label: "Stale doing (>3 days)", items: review.staleDoing },
+    {
+      key: "untaggedHighPriority",
+      label: "Untagged high priority",
+      items: review.untaggedHighPriority,
+    },
+  ];
+
+  for (const section of sections) {
+    const block = document.createElement("div");
+    block.className = "weekly-review-section";
+    const heading = document.createElement("h4");
+    heading.textContent = `${section.label} (${section.items.length})`;
+    block.append(heading);
+
+    if (!section.items.length) {
+      const empty = document.createElement("p");
+      empty.className = "weekly-review-empty";
+      empty.textContent = "None";
+      block.append(empty);
+    } else {
+      const list = document.createElement("ul");
+      for (const task of section.items) {
+        const item = document.createElement("li");
+        item.textContent = `#${task.id} ${task.title}`;
+        list.append(item);
+      }
+      block.append(list);
+    }
+
+    weeklyReviewContent.append(block);
+  }
+}
+
+function renderActivity(events) {
+  activityFeed.replaceChildren();
+
+  if (!events.length) {
+    const empty = document.createElement("li");
+    empty.className = "activity-empty";
+    empty.textContent = "No activity yet.";
+    activityFeed.append(empty);
+    return;
+  }
+
+  for (const event of events) {
+    const item = document.createElement("li");
+    item.className = `activity-item activity-item--${event.event}`;
+    item.innerHTML = `
+      <span class="activity-message">${event.message}</span>
+      <time class="activity-time">${formatActivityTimestamp(event.timestamp)}</time>
+    `;
+    activityFeed.append(item);
+  }
+}
+
+function renderTemplateOptions() {
+  templateSelect.replaceChildren();
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "Blank task";
+  templateSelect.append(blank);
+
+  for (const template of allTemplates()) {
+    const option = document.createElement("option");
+    option.value = template.id;
+    option.textContent = template.name;
+    templateSelect.append(option);
+  }
+}
+
+function applyTemplate(templateId) {
+  const template = templateById(templateId);
+  if (!template) {
+    return;
+  }
+
+  titleInput.value = template.title || "";
+  taskForm.querySelector("[name='owner']").value = template.owner || "";
+  taskForm.querySelector("[name='priority']").value = template.priority || "medium";
+  taskForm.querySelector("[name='minutes']").value = String(template.minutes || 25);
+  taskForm.querySelector("[name='tags']").value = (template.tags || []).join(", ");
+  taskForm.querySelector("[name='sprint']").value = template.sprint || "";
+  titleInput.focus();
 }
 
 function renderBlockedByOptions(tasks) {
@@ -431,6 +619,33 @@ function renderTagFilterOptions(tasks) {
   }
 
   tagFilter.value = tags.includes(current) ? current : "";
+}
+
+function renderSprintFilterOptions(tasks) {
+  const current = sprintFilter.value;
+  const sprints = collectSprints(tasks);
+
+  sprintFilter.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All sprints";
+  sprintFilter.append(allOption);
+
+  for (const sprint of sprints) {
+    const option = document.createElement("option");
+    option.value = sprint;
+    option.textContent = sprint;
+    sprintFilter.append(option);
+  }
+
+  sprintFilter.value = sprints.includes(current) ? current : "";
+
+  sprintSuggestions.replaceChildren();
+  for (const sprint of sprints) {
+    const option = document.createElement("option");
+    option.value = sprint;
+    sprintSuggestions.append(option);
+  }
 }
 
 function formatCountdown(seconds) {
@@ -507,6 +722,54 @@ function exitFocusMode() {
   document.body.classList.remove("is-focus-mode");
 }
 
+function elapsedMinutesSince(startedAt) {
+  const started = new Date(startedAt).getTime();
+  if (Number.isNaN(started)) {
+    return 0;
+  }
+  return Math.max(0, Math.round((Date.now() - started) / 60000));
+}
+
+function updateTimerButton(button, task) {
+  const isRunning = Boolean(task.startedAt || activeTimers.has(task.id));
+  button.textContent = isRunning ? "Stop timer" : "Start timer";
+  button.classList.toggle("is-active", isRunning);
+}
+
+function updateTimerDisplay(node, task) {
+  let label = formatTimeTracking(task);
+  if (task.startedAt || activeTimers.has(task.id)) {
+    const startedAt = task.startedAt || new Date(activeTimers.get(task.id)).toISOString();
+    const elapsed = elapsedMinutesSince(startedAt);
+    label = `Tracking ${elapsed}m · ${formatTimeTracking(task)}`;
+  }
+  node.textContent = label;
+}
+
+async function toggleTaskTimer(task) {
+  const clean = normaliseTask(task);
+
+  if (clean.startedAt || activeTimers.has(clean.id)) {
+    const startedAt = clean.startedAt || new Date(activeTimers.get(clean.id)).toISOString();
+    const elapsed = elapsedMinutesSince(startedAt);
+    const nextActual = clean.actualMinutes + elapsed;
+    if (timerIntervals.has(clean.id)) {
+      clearInterval(timerIntervals.get(clean.id));
+      timerIntervals.delete(clean.id);
+    }
+    activeTimers.delete(clean.id);
+    await updateTask(clean.id, {
+      actual_minutes: nextActual,
+      started_at: null,
+    });
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  activeTimers.set(clean.id, Date.now());
+  await updateTask(clean.id, { started_at: startedAt });
+}
+
 function createTaskCard(task) {
   const taskNode = template.content.firstElementChild.cloneNode(true);
   const blocked = isTaskBlocked(task, allTasks);
@@ -522,8 +785,14 @@ function createTaskCard(task) {
   titleNode.textContent = task.title;
   titleNode.addEventListener("click", () => startInlineEdit(titleNode, task));
 
-  taskNode.querySelector("[data-task-owner]").textContent = task.owner;
+  taskNode.querySelector("[data-task-owner]").textContent = [
+    task.owner,
+    task.sprint ? `· ${task.sprint}` : "",
+  ].join(" ");
   taskNode.querySelector("[data-task-summary]").textContent = taskSummary(task);
+
+  const timeNode = taskNode.querySelector("[data-task-time]");
+  updateTimerDisplay(timeNode, task);
 
   const blockedNode = taskNode.querySelector("[data-task-blocked]");
   if (task.blockedBy.length) {
@@ -570,6 +839,22 @@ function createTaskCard(task) {
   }
 
   taskNode.querySelector("[data-delete-task]").addEventListener("click", () => deleteTask(task.id));
+
+  const timerButton = taskNode.querySelector("[data-toggle-timer]");
+  updateTimerButton(timerButton, task);
+  timerButton.addEventListener("click", () => toggleTaskTimer(task));
+
+  if (task.startedAt || activeTimers.has(task.id)) {
+    const intervalId = setInterval(() => {
+      const current = allTasks.find((item) => item.id === task.id);
+      if (!current) {
+        clearInterval(intervalId);
+        return;
+      }
+      updateTimerDisplay(timeNode, current);
+    }, 1000);
+    timerIntervals.set(task.id, intervalId);
+  }
 
   taskNode.querySelector("[data-start-pomodoro]").addEventListener("click", () => {
     requestNotificationPermission();
@@ -684,37 +969,67 @@ function renderTasks() {
   const query = searchInput.value;
   const visibleTasks = filterTasks(allTasks, query, {
     tag: tagFilter.value,
+    sprint: sprintFilter.value,
+    status: statusFilter.value,
     dueToday: dueTodayFilter.checked,
   });
   renderStats(allTasks);
   renderTagFilterOptions(allTasks);
+  renderSprintFilterOptions(allTasks);
   renderBlockedByOptions(allTasks);
 
   for (const column of taskBoard.querySelectorAll("[data-status-column]")) {
     const list = column.querySelector("[data-column-list]");
     list.replaceChildren();
     column.querySelector("[data-column-count]").textContent = "0";
+    column.hidden = false;
   }
 
   if (visibleTasks.length === 0) {
     emptyState.hidden = false;
-    emptyState.textContent = query || tagFilter.value || dueTodayFilter.checked
-      ? "No tasks match your filters."
-      : "No tasks yet. Add one to get started.";
+    emptyState.textContent =
+      query || tagFilter.value || sprintFilter.value || statusFilter.value || dueTodayFilter.checked
+        ? "No tasks match your filters."
+        : "No tasks yet. Add one to get started.";
     return;
   }
 
   emptyState.hidden = true;
   const groups = groupByStatus(visibleTasks);
+  const activeStatusFilter = statusFilter.value;
 
   for (const status of ["todo", "doing", "done"]) {
     const column = taskBoard.querySelector(`[data-status-column="${status}"]`);
     const list = column.querySelector("[data-column-list]");
     column.querySelector("[data-column-count]").textContent = String(groups[status].length);
+    column.hidden = Boolean(activeStatusFilter && activeStatusFilter !== status);
 
     for (const task of groups[status]) {
       list.append(createTaskCard(task));
     }
+  }
+}
+
+function isTypingTarget(element) {
+  if (!element) {
+    return false;
+  }
+  const tagName = element.tagName;
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT" || element.isContentEditable;
+}
+
+function openShortcutsModal() {
+  shortcutsOverlay.hidden = false;
+}
+
+function closeShortcutsModal() {
+  shortcutsOverlay.hidden = true;
+}
+
+function closeAllOverlays() {
+  closeShortcutsModal();
+  if (!focusOverlay.hidden) {
+    exitFocusMode();
   }
 }
 
@@ -723,10 +1038,21 @@ function setStatus(message) {
 }
 
 initTheme();
+renderTemplateOptions();
 themeToggle.addEventListener("click", toggleTheme);
+undoButton.addEventListener("click", undoLastAction);
 searchInput.addEventListener("input", renderTasks);
 tagFilter.addEventListener("change", renderTasks);
+sprintFilter.addEventListener("change", renderTasks);
+statusFilter.addEventListener("change", renderTasks);
 dueTodayFilter.addEventListener("change", renderTasks);
+templateSelect.addEventListener("change", () => applyTemplate(templateSelect.value));
+closeShortcutsButton.addEventListener("click", closeShortcutsModal);
+shortcutsOverlay.addEventListener("click", (event) => {
+  if (event.target === shortcutsOverlay) {
+    closeShortcutsModal();
+  }
+});
 taskForm.addEventListener("submit", createTask);
 quickForm.addEventListener("submit", createQuickTask);
 quickForm.querySelector("[name='quick_text']").addEventListener("input", (event) => {
@@ -756,8 +1082,44 @@ focusOverlay.addEventListener("click", (event) => {
   }
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !focusOverlay.hidden) {
-    exitFocusMode();
+  if (event.key === "Escape") {
+    closeAllOverlays();
+    return;
+  }
+
+  if (isTypingTarget(event.target)) {
+    return;
+  }
+
+  if (event.key === "n") {
+    event.preventDefault();
+    titleInput.focus();
+    return;
+  }
+
+  if (event.key === "/") {
+    event.preventDefault();
+    searchInput.focus();
+    return;
+  }
+
+  if (event.key === "?") {
+    event.preventDefault();
+    openShortcutsModal();
+    return;
+  }
+
+  if (event.key === "f") {
+    event.preventDefault();
+    enterFocusMode();
+    return;
+  }
+
+  const status = STATUS_FILTER_KEYS[event.key];
+  if (status) {
+    event.preventDefault();
+    statusFilter.value = statusFilter.value === status ? "" : status;
+    renderTasks();
   }
 });
 setupColumnDropZones();

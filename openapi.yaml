@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TaskPulse API
-  version: 3.0.0
+  version: 4.0.0
   description: Python standard-library API for the TaskPulse kanban task board.
 servers:
   - url: http://localhost:8000
@@ -204,6 +204,40 @@ paths:
                 properties:
                   stats:
                     $ref: "#/components/schemas/Stats"
+  /api/activity:
+    get:
+      summary: Recent activity feed
+      responses:
+        "200":
+          description: Last 50 activity events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activity:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ActivityEvent"
+  /api/undo:
+    post:
+      summary: Undo the last mutating action
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Action undone
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/UndoResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /ws:
     get:
       summary: WebSocket live sync and presence
@@ -234,6 +268,7 @@ components:
         - status
         - tags
         - blocked_by
+        - actual_minutes
         - created_at
       properties:
         id:
@@ -273,6 +308,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        actual_minutes:
+          type: integer
+          minimum: 0
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        sprint:
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -310,6 +355,9 @@ components:
         recurrence:
           type: string
           enum: [daily, weekly, monthly]
+          nullable: true
+        sprint:
+          type: string
           nullable: true
     ParsedTask:
       type: object
@@ -371,6 +419,16 @@ components:
           type: string
           enum: [daily, weekly, monthly]
           nullable: true
+        actual_minutes:
+          type: integer
+          minimum: 0
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        sprint:
+          type: string
+          nullable: true
     Stats:
       type: object
       properties:
@@ -389,6 +447,60 @@ components:
               type: integer
             low:
               type: integer
+        estimated_minutes:
+          type: integer
+        actual_minutes:
+          type: integer
+        by_sprint:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total:
+                type: integer
+              completed:
+                type: integer
+              pending:
+                type: integer
+              estimated_minutes:
+                type: integer
+              actual_minutes:
+                type: integer
+    ActivityEvent:
+      type: object
+      properties:
+        event:
+          type: string
+          enum:
+            - task_created
+            - task_completed
+            - task_moved
+            - task_updated
+            - task_deleted
+            - task_imported
+            - time_tracked
+            - undo
+        task_id:
+          type: integer
+          nullable: true
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    UndoResult:
+      type: object
+      properties:
+        undone:
+          type: string
+        task_id:
+          type: integer
+        task:
+          $ref: "#/components/schemas/Task"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
   responses:
     BadRequest:
       description: Validation error

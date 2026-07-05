@@ -43,6 +43,10 @@ export function normaliseTask(task) {
     tags: [...new Set(tags)],
     blockedBy,
     recurrence: task.recurrence || null,
+    actualMinutes: Math.max(0, Number(task.actual_minutes ?? task.actualMinutes ?? 0)),
+    startedAt: task.started_at || task.startedAt || null,
+    sprint: task.sprint || null,
+    createdAt: task.created_at || task.createdAt || null,
   };
 }
 
@@ -152,6 +156,8 @@ export function taskSummary(task) {
 export function filterTasks(tasks, query, options = {}) {
   const needle = String(query || "").trim().toLowerCase();
   const tagFilter = String(options.tag || "").trim().toLowerCase();
+  const sprintFilter = String(options.sprint || "").trim();
+  const statusFilter = String(options.status || "").trim().toLowerCase();
   const dueTodayOnly = Boolean(options.dueToday);
   const referenceDate = options.referenceDate || new Date();
 
@@ -166,11 +172,26 @@ export function filterTasks(tasks, query, options = {}) {
         return false;
       }
 
+      if (sprintFilter && (task.sprint || "") !== sprintFilter) {
+        return false;
+      }
+
+      if (statusFilter && task.status !== statusFilter) {
+        return false;
+      }
+
       if (!needle) {
         return true;
       }
 
-      const haystack = [task.title, task.owner, task.priority, task.status, ...task.tags]
+      const haystack = [
+        task.title,
+        task.owner,
+        task.priority,
+        task.status,
+        task.sprint || "",
+        ...task.tags,
+      ]
         .join(" ")
         .toLowerCase();
       return haystack.includes(needle);
@@ -187,12 +208,46 @@ export function collectTags(tasks) {
   return [...tags].sort();
 }
 
+export function collectSprints(tasks) {
+  const sprints = new Set();
+  for (const task of tasks.map(normaliseTask)) {
+    if (task.sprint) {
+      sprints.add(task.sprint);
+    }
+  }
+  return [...sprints].sort();
+}
+
 export function computeStats(tasks) {
   const normalised = tasks.map(normaliseTask);
   const minutesByPriority = { high: 0, medium: 0, low: 0 };
+  let estimatedMinutes = 0;
+  let actualMinutes = 0;
+  const bySprint = {};
 
   for (const task of normalised) {
     minutesByPriority[task.priority] += task.minutes;
+    estimatedMinutes += task.minutes;
+    actualMinutes += task.actualMinutes;
+
+    const sprintKey = task.sprint || "unassigned";
+    if (!bySprint[sprintKey]) {
+      bySprint[sprintKey] = {
+        total: 0,
+        completed: 0,
+        pending: 0,
+        estimatedMinutes: 0,
+        actualMinutes: 0,
+      };
+    }
+    bySprint[sprintKey].total += 1;
+    if (task.done) {
+      bySprint[sprintKey].completed += 1;
+    } else {
+      bySprint[sprintKey].pending += 1;
+    }
+    bySprint[sprintKey].estimatedMinutes += task.minutes;
+    bySprint[sprintKey].actualMinutes += task.actualMinutes;
   }
 
   const completed = normalised.filter((task) => task.done).length;
@@ -202,5 +257,69 @@ export function computeStats(tasks) {
     completed,
     pending: normalised.length - completed,
     minutesByPriority,
+    estimatedMinutes,
+    actualMinutes,
+    bySprint,
   };
+}
+
+export function isOverdue(task, referenceDate = new Date()) {
+  const clean = normaliseTask(task);
+  if (clean.done || !clean.dueDate) {
+    return false;
+  }
+  const due = new Date(`${clean.dueDate}T23:59:59`);
+  return due < referenceDate;
+}
+
+export function isStaleDoing(task, referenceDate = new Date(), staleDays = 3) {
+  const clean = normaliseTask(task);
+  if (clean.status !== "doing" || clean.done) {
+    return false;
+  }
+  const anchor = clean.startedAt || clean.createdAt;
+  if (!anchor) {
+    return false;
+  }
+  const started = new Date(anchor);
+  const threshold = staleDays * 24 * 60 * 60 * 1000;
+  return referenceDate.getTime() - started.getTime() > threshold;
+}
+
+export function isUntaggedHighPriority(task) {
+  const clean = normaliseTask(task);
+  return clean.priority === "high" && !clean.done && clean.tags.length === 0;
+}
+
+export function weeklyReviewItems(tasks, referenceDate = new Date()) {
+  const normalised = tasks.map(normaliseTask);
+  return {
+    overdue: normalised.filter((task) => isOverdue(task, referenceDate)),
+    staleDoing: normalised.filter((task) => isStaleDoing(task, referenceDate)),
+    untaggedHighPriority: normalised.filter((task) => isUntaggedHighPriority(task)),
+  };
+}
+
+export function formatActivityTimestamp(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return timestamp;
+  }
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function formatTimeTracking(task) {
+  const clean = normaliseTask(task);
+  if (clean.actualMinutes > 0) {
+    return `${formatMinutes(clean.actualMinutes)} tracked · est ${clean.minutes}m`;
+  }
+  return `Est ${clean.minutes}m`;
 }

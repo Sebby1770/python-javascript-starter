@@ -2,20 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  collectSprints,
   collectTags,
   computeStats,
   filterTasks,
   focusQueue,
+  formatActivityTimestamp,
   formatDueDate,
   formatMinutes,
+  formatTimeTracking,
   groupByPriority,
   groupByStatus,
   isDueToday,
+  isOverdue,
+  isStaleDoing,
   isTaskBlocked,
+  isUntaggedHighPriority,
   normaliseTask,
   parseTagsInput,
   taskSummary,
+  weeklyReviewItems,
 } from "./tasks.js";
+import { allTemplates, BUILTIN_TEMPLATES } from "./templates.js";
 
 test("normaliseTask applies safe defaults", () => {
   const task = normaliseTask({ id: "7", title: "", priority: "urgent" });
@@ -189,4 +197,101 @@ test("computeStats totals tasks and minutes by priority", () => {
   assert.equal(stats.completed, 1);
   assert.equal(stats.pending, 2);
   assert.deepEqual(stats.minutesByPriority, { high: 30, medium: 20, low: 10 });
+});
+
+test("normaliseTask includes sprint and time tracking fields", () => {
+  const task = normaliseTask({
+    id: 1,
+    title: "Tracked",
+    sprint: "Sprint 3",
+    actual_minutes: 12,
+    started_at: "2026-07-05T10:00:00+00:00",
+  });
+
+  assert.equal(task.sprint, "Sprint 3");
+  assert.equal(task.actualMinutes, 12);
+  assert.equal(task.startedAt, "2026-07-05T10:00:00+00:00");
+});
+
+test("computeStats includes estimated and actual totals and sprint stats", () => {
+  const stats = computeStats([
+    { id: 1, title: "A", sprint: "Sprint 1", minutes: 30, actual_minutes: 10 },
+    { id: 2, title: "B", sprint: "Sprint 1", minutes: 20, actual_minutes: 5 },
+    { id: 3, title: "C", minutes: 15 },
+  ]);
+
+  assert.equal(stats.estimatedMinutes, 65);
+  assert.equal(stats.actualMinutes, 15);
+  assert.equal(stats.bySprint["Sprint 1"].total, 2);
+  assert.equal(stats.bySprint["Sprint 1"].actualMinutes, 15);
+  assert.equal(stats.bySprint.unassigned.total, 1);
+});
+
+test("filterTasks supports sprint and status filters", () => {
+  const tasks = [
+    { id: 1, title: "Todo", status: "todo", sprint: "Sprint 1" },
+    { id: 2, title: "Doing", status: "doing", sprint: "Sprint 2" },
+    { id: 3, title: "Done", status: "done", done: true, sprint: "Sprint 1" },
+  ];
+
+  assert.equal(filterTasks(tasks, "", { sprint: "Sprint 1" }).length, 2);
+  assert.equal(filterTasks(tasks, "", { status: "doing" }).length, 1);
+});
+
+test("collectSprints returns sorted unique sprint names", () => {
+  assert.deepEqual(
+    collectSprints([
+      { id: 1, sprint: "Sprint 2" },
+      { id: 2, sprint: "Sprint 1" },
+      { id: 3, sprint: "Sprint 2" },
+    ]),
+    ["Sprint 1", "Sprint 2"],
+  );
+});
+
+test("weeklyReviewItems finds overdue stale and untagged high priority tasks", () => {
+  const reference = new Date("2026-07-10T12:00:00");
+  const review = weeklyReviewItems(
+    [
+      {
+        id: 1,
+        title: "Late",
+        priority: "high",
+        due_date: "2026-07-01",
+        status: "todo",
+      },
+      {
+        id: 2,
+        title: "Stuck",
+        status: "doing",
+        created_at: "2026-07-01T10:00:00+00:00",
+      },
+      { id: 3, title: "No tags", priority: "high", status: "todo", tags: [] },
+      { id: 4, title: "Fine", priority: "low", status: "todo", tags: ["ok"] },
+    ],
+    reference,
+  );
+
+  assert.equal(review.overdue.length, 1);
+  assert.equal(review.staleDoing.length, 1);
+  assert.equal(review.untaggedHighPriority.length, 2);
+  assert.equal(isOverdue({ due_date: "2026-07-01" }, reference), true);
+  assert.equal(
+    isStaleDoing(
+      { status: "doing", created_at: "2026-07-01T10:00:00+00:00" },
+      reference,
+    ),
+    true,
+  );
+  assert.equal(isUntaggedHighPriority({ priority: "high", tags: [] }), true);
+});
+
+test("formatTimeTracking and formatActivityTimestamp render readable labels", () => {
+  assert.match(formatTimeTracking({ minutes: 25, actual_minutes: 10 }), /10 minutes tracked/);
+  assert.match(formatActivityTimestamp("2026-07-05T15:30:00+00:00"), /Jul/);
+});
+
+test("built-in templates are available", () => {
+  assert.equal(BUILTIN_TEMPLATES.length, 4);
+  assert.ok(allTemplates().some((template) => template.id === "bug-fix"));
 });

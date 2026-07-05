@@ -55,6 +55,10 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             self.send_json({"stats": self.store.get_stats()})
             return
 
+        if path == "/api/activity":
+            self.send_json({"activity": self.store.get_activity()})
+            return
+
         self.serve_static(path)
 
     def do_POST(self) -> None:
@@ -70,6 +74,12 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             if not self.require_api_key():
                 return
             self.parse_task_input()
+            return
+
+        if path == "/api/undo":
+            if not self.require_api_key():
+                return
+            self.undo_last_action()
             return
 
         if path != "/api/tasks":
@@ -91,6 +101,7 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
                 status=str(payload.get("status", "todo")),
                 blocked_by=payload.get("blocked_by"),
                 recurrence=payload.get("recurrence"),
+                sprint=payload.get("sprint"),
             )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -190,6 +201,16 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             return
 
         self.send_json({"parsed": parsed})
+
+    def undo_last_action(self) -> None:
+        try:
+            result = self.store.undo_last()
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self.broadcast_change()
+        self.send_json({"result": result})
 
     def import_tasks(self) -> None:
         try:

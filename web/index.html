@@ -22,6 +22,14 @@
               <h1 id="new-task-title">TaskPulse</h1>
             </div>
             <div class="composer-header-actions">
+              <button
+                type="button"
+                class="ghost-button header-action"
+                data-undo-button
+                title="Undo last action"
+              >
+                Undo
+              </button>
               <span
                 class="presence-pill"
                 data-presence-pill
@@ -52,8 +60,15 @@
 
           <form data-task-form class="task-form">
             <label>
+              Template
+              <select name="template" data-template-select>
+                <option value="">Blank task</option>
+              </select>
+            </label>
+
+            <label>
               Task
-              <input name="title" type="text" placeholder="Design the API route" required />
+              <input name="title" type="text" data-title-input placeholder="Design the API route" required />
             </label>
 
             <label>
@@ -85,6 +100,12 @@
             <label>
               Tags
               <input name="tags" type="text" placeholder="api, frontend, release" />
+            </label>
+
+            <label>
+              Sprint
+              <input name="sprint" type="text" placeholder="Sprint 12" list="sprint-suggestions" />
+              <datalist id="sprint-suggestions" data-sprint-suggestions></datalist>
             </label>
 
             <label>
@@ -140,6 +161,18 @@
             </article>
           </div>
 
+          <h3 class="stats-subtitle">Time tracking</h3>
+          <ul class="priority-stats time-stats">
+            <li>
+              <span>Estimated</span>
+              <span data-stat-estimated-minutes>0 minutes</span>
+            </li>
+            <li>
+              <span>Actual</span>
+              <span data-stat-actual-minutes>0 minutes</span>
+            </li>
+          </ul>
+
           <h3 class="stats-subtitle">Minutes by priority</h3>
           <ul class="priority-stats">
             <li>
@@ -156,8 +189,21 @@
             </li>
           </ul>
 
+          <h3 class="stats-subtitle">By sprint</h3>
+          <ul class="priority-stats" data-sprint-stats></ul>
+
           <h3 class="stats-subtitle">Burndown (7 days)</h3>
           <div data-burndown-chart class="burndown-panel"></div>
+
+          <details class="collapsible-panel" data-weekly-review>
+            <summary>Weekly review</summary>
+            <div class="weekly-review-content" data-weekly-review-content></div>
+          </details>
+
+          <section class="activity-panel" aria-label="Activity feed">
+            <h3 class="stats-subtitle">Activity</h3>
+            <ul class="activity-feed" data-activity-feed></ul>
+          </section>
 
           <label class="filter-checkbox pomodoro-setting">
             <input data-pomodoro-tick type="checkbox" />
@@ -183,6 +229,23 @@
               <span class="visually-hidden">Filter by tag</span>
               <select data-tag-filter>
                 <option value="">All tags</option>
+              </select>
+            </label>
+
+            <label class="filter-field">
+              <span class="visually-hidden">Filter by sprint</span>
+              <select data-sprint-filter>
+                <option value="">All sprints</option>
+              </select>
+            </label>
+
+            <label class="filter-field">
+              <span class="visually-hidden">Filter by status</span>
+              <select data-status-filter>
+                <option value="">All columns</option>
+                <option value="todo">To Do (1)</option>
+                <option value="doing">Doing (2)</option>
+                <option value="done">Done (3)</option>
               </select>
             </label>
 
@@ -231,6 +294,21 @@
       </section>
     </main>
 
+    <div class="shortcuts-overlay" data-shortcuts-overlay hidden>
+      <div class="shortcuts-shell" role="dialog" aria-labelledby="shortcuts-title">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <ul class="shortcuts-list">
+          <li><kbd>n</kbd> Focus new task form</li>
+          <li><kbd>/</kbd> Focus search</li>
+          <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> Filter kanban columns</li>
+          <li><kbd>f</kbd> Enter focus mode</li>
+          <li><kbd>?</kbd> Show this help</li>
+          <li><kbd>Esc</kbd> Close overlays</li>
+        </ul>
+        <button type="button" class="primary-button" data-close-shortcuts>Close</button>
+      </div>
+    </div>
+
     <div class="focus-overlay" data-focus-overlay hidden>
       <div class="focus-shell">
         <p class="focus-eyebrow">Focus mode</p>
@@ -260,8 +338,10 @@
         <div class="task-card-actions">
           <div class="task-card-tools">
             <button type="button" class="ghost-button" data-start-pomodoro>Pomodoro</button>
+            <button type="button" class="ghost-button" data-toggle-timer>Start timer</button>
             <button type="button" class="ghost-button" data-enter-focus>Focus</button>
           </div>
+          <p data-task-time class="task-card-time"></p>
           <div class="status-buttons" role="group" aria-label="Move task">
             <button type="button" class="status-button" data-set-status="todo">To Do</button>
             <button type="button" class="status-button" data-set-status="doing">
