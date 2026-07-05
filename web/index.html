@@ -21,13 +21,32 @@
               <p class="eyebrow">Python + JavaScript</p>
               <h1 id="new-task-title">TaskPulse</h1>
             </div>
-            <button
-              type="button"
-              class="theme-toggle"
-              data-theme-toggle
-              aria-pressed="false"
-            >
-              Dark mode
+            <div class="composer-header-actions">
+              <span
+                class="presence-pill"
+                data-presence-pill
+                title="No clerks online"
+                hidden
+              >
+                0 clerks online
+              </span>
+              <button
+                type="button"
+                class="theme-toggle"
+                data-theme-toggle
+                aria-pressed="false"
+              >
+                Dark mode
+              </button>
+            </div>
+          </div>
+
+          <div class="composer-mode-toggle">
+            <button type="button" class="mode-button is-active" data-mode="form">
+              Form
+            </button>
+            <button type="button" class="mode-button" data-mode="quick">
+              Quick add
             </button>
           </div>
 
@@ -68,7 +87,37 @@
               <input name="tags" type="text" placeholder="api, frontend, release" />
             </label>
 
+            <label>
+              Blocked by
+              <select name="blocked_by" data-blocked-by-select>
+                <option value="">None</option>
+              </select>
+            </label>
+
+            <label class="filter-checkbox">
+              <input name="recurrence" type="checkbox" value="daily" data-recurrence-checkbox />
+              Recurring (daily)
+            </label>
+
             <button type="submit" class="primary-button">Add task</button>
+          </form>
+
+          <form data-quick-form class="task-form" hidden>
+            <label>
+              Quick add
+              <input
+                name="quick_text"
+                type="text"
+                placeholder='high priority api task for Seb due Friday 30 min #backend #release'
+                autocomplete="off"
+              />
+            </label>
+            <p class="quick-hint">
+              Try natural language — priority, owner, due date, minutes, and #tags are parsed
+              automatically.
+            </p>
+            <div class="quick-preview" data-quick-preview hidden></div>
+            <button type="submit" class="primary-button">Add parsed task</button>
           </form>
 
           <p data-status class="status" role="status">Starting...</p>
@@ -106,6 +155,14 @@
               <span data-stat-minutes-low>0 minutes</span>
             </li>
           </ul>
+
+          <h3 class="stats-subtitle">Burndown (7 days)</h3>
+          <div data-burndown-chart class="burndown-panel"></div>
+
+          <label class="filter-checkbox pomodoro-setting">
+            <input data-pomodoro-tick type="checkbox" />
+            Pomodoro tick sound
+          </label>
         </section>
       </aside>
 
@@ -174,6 +231,21 @@
       </section>
     </main>
 
+    <div class="focus-overlay" data-focus-overlay hidden>
+      <div class="focus-shell">
+        <p class="focus-eyebrow">Focus mode</p>
+        <h2 class="focus-title" data-focus-title>Task title</h2>
+        <p class="focus-meta" data-focus-meta></p>
+        <p class="focus-timer" data-focus-timer>25:00</p>
+        <div class="focus-actions">
+          <button type="button" class="primary-button" data-focus-complete>Complete</button>
+          <button type="button" class="ghost-button" data-focus-skip>Skip</button>
+          <button type="button" class="ghost-button" data-focus-exit>Exit focus</button>
+        </div>
+        <p class="focus-queue" data-focus-queue></p>
+      </div>
+    </div>
+
     <template data-task-template>
       <article class="task-card">
         <span class="priority-dot" aria-hidden="true"></span>
@@ -181,13 +253,20 @@
           <h3 data-task-title class="task-card-title" title="Click to edit"></h3>
           <p data-task-owner></p>
         </div>
+        <p data-task-blocked class="task-card-blocked" hidden></p>
         <p data-task-due class="task-card-due" hidden></p>
         <div data-task-tags class="task-card-tags"></div>
         <p data-task-summary class="task-card-summary"></p>
         <div class="task-card-actions">
+          <div class="task-card-tools">
+            <button type="button" class="ghost-button" data-start-pomodoro>Pomodoro</button>
+            <button type="button" class="ghost-button" data-enter-focus>Focus</button>
+          </div>
           <div class="status-buttons" role="group" aria-label="Move task">
             <button type="button" class="status-button" data-set-status="todo">To Do</button>
-            <button type="button" class="status-button" data-set-status="doing">Doing</button>
+            <button type="button" class="status-button" data-set-status="doing">
+              <span data-doing-label>Doing</span>
+            </button>
             <button type="button" class="status-button" data-set-status="done">Done</button>
           </div>
           <button type="button" class="danger-button" data-delete-task>Delete</button>

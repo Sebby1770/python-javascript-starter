@@ -70,6 +70,18 @@ class ServerTest(unittest.TestCase):
         self.assertIn("openapi:", body)
         self.assertIn("/api/tasks", body)
 
+    def test_parse_task_endpoint(self):
+        status, data = self._request(
+            "POST",
+            "/api/tasks/parse",
+            payload={"text": "high priority docs for Seb 15 min #release"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["parsed"]["priority"], "high")
+        self.assertEqual(data["parsed"]["owner"], "Seb")
+        self.assertEqual(data["parsed"]["minutes"], 15)
+        self.assertEqual(data["parsed"]["tags"], ["release"])
+
     def test_api_key_required_for_mutations_when_set(self):
         original = server_module.API_KEY
         server_module.API_KEY = "secret-key"

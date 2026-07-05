@@ -5,11 +5,13 @@ import {
   collectTags,
   computeStats,
   filterTasks,
+  focusQueue,
   formatDueDate,
   formatMinutes,
   groupByPriority,
   groupByStatus,
   isDueToday,
+  isTaskBlocked,
   normaliseTask,
   parseTagsInput,
   taskSummary,
@@ -139,6 +141,41 @@ test("collectTags returns sorted unique tags", () => {
     ]),
     ["api", "docs", "frontend"],
   );
+});
+
+test("normaliseTask includes blockedBy and recurrence", () => {
+  const task = normaliseTask({
+    id: 1,
+    title: "Blocked",
+    blocked_by: [2, 2],
+    recurrence: "daily",
+  });
+
+  assert.deepEqual(task.blockedBy, [2]);
+  assert.equal(task.recurrence, "daily");
+});
+
+test("isTaskBlocked detects incomplete blockers", () => {
+  const tasks = [
+    { id: 1, title: "Blocker", status: "todo" },
+    { id: 2, title: "Dependent", blocked_by: [1] },
+  ];
+
+  assert.equal(isTaskBlocked(tasks[1], tasks), true);
+
+  tasks[0].status = "done";
+  tasks[0].done = true;
+  assert.equal(isTaskBlocked(tasks[1], tasks), false);
+});
+
+test("focusQueue returns pending tasks by priority", () => {
+  const queue = focusQueue([
+    { id: 1, title: "Low", priority: "low", status: "todo" },
+    { id: 2, title: "High", priority: "high", status: "todo" },
+    { id: 3, title: "Done", priority: "high", status: "done", done: true },
+  ]);
+
+  assert.deepEqual(queue.map((task) => task.title), ["High", "Low"]);
 });
 
 test("computeStats totals tasks and minutes by priority", () => {

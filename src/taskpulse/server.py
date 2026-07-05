@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .nlp import parse_task_text
 from .store import TaskStoreProtocol, create_store
 from .websocket import WebSocketHub, handle_websocket_upgrade
 
@@ -65,6 +66,12 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             self.import_tasks()
             return
 
+        if path == "/api/tasks/parse":
+            if not self.require_api_key():
+                return
+            self.parse_task_input()
+            return
+
         if path != "/api/tasks":
             self.send_error(HTTPStatus.NOT_FOUND, "Route not found.")
             return
@@ -82,6 +89,8 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
                 due_date=payload.get("due_date"),
                 tags=payload.get("tags"),
                 status=str(payload.get("status", "todo")),
+                blocked_by=payload.get("blocked_by"),
+                recurrence=payload.get("recurrence"),
             )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -169,6 +178,19 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def parse_task_input(self) -> None:
+        try:
+            payload = self.read_json()
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                raise ValueError("text is required.")
+            parsed = parse_task_text(text)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"parsed": parsed})
+
     def import_tasks(self) -> None:
         try:
             payload = self.read_json()
@@ -241,6 +263,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPSer
 
 
 def main() -> None:
+    TaskPulseHandler.store = create_store()
     server = create_server()
     host, port = server.server_address
     print(f"TaskPulse running at http://{host}:{port}")

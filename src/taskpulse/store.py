@@ -13,6 +13,7 @@ from typing import Iterable, Protocol
 
 VALID_PRIORITIES = {"low", "medium", "high"}
 VALID_STATUSES = {"todo", "doing", "done"}
+VALID_RECURRENCES = {"daily", "weekly", "monthly"}
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 DEFAULT_TASKS: list[dict[str, object]] = [
@@ -51,6 +52,9 @@ class Task:
     status: str = "todo"
     due_date: str | None = None
     tags: list[str] = field(default_factory=list)
+    blocked_by: list[int] = field(default_factory=list)
+    recurrence: str | None = None
+    last_recurred_at: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -72,6 +76,8 @@ class TaskStoreProtocol(Protocol):
         due_date: str | None = None,
         tags: list[str] | None = None,
         status: str = "todo",
+        blocked_by: list[int] | None = None,
+        recurrence: str | None = None,
     ) -> dict[str, object]: ...
 
     def toggle_task(self, task_id: int) -> dict[str, object]: ...
@@ -140,6 +146,31 @@ def sync_done_and_status(*, done: bool, status: str) -> tuple[bool, str]:
     return done, status
 
 
+def validate_recurrence(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    recurrence = str(value).lower().strip()
+    if recurrence not in VALID_RECURRENCES:
+        raise ValueError("Recurrence must be daily, weekly, or monthly.")
+    return recurrence
+
+
+def normalise_blocked_by(value: object) -> list[int]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("blocked_by must be a list of task IDs.")
+    blocked: list[int] = []
+    seen: set[int] = set()
+    for item in value:
+        task_id = int(item)
+        if task_id <= 0 or task_id in seen:
+            continue
+        seen.add(task_id)
+        blocked.append(task_id)
+    return blocked
+
+
 def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
     if "title" in fields:
         title = str(fields["title"]).strip()
@@ -168,6 +199,12 @@ def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
     if "tags" in fields:
         task.tags = normalise_tags(fields["tags"])
 
+    if "blocked_by" in fields:
+        task.blocked_by = normalise_blocked_by(fields["blocked_by"])
+
+    if "recurrence" in fields:
+        task.recurrence = validate_recurrence(fields["recurrence"])
+
     status_updated = False
     if "status" in fields:
         task.status = validate_status(fields["status"])
@@ -185,6 +222,38 @@ def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
             task.status = "todo"
 
     task.done, task.status = sync_done_and_status(done=task.done, status=task.status)
+
+
+def is_blocked(task: Task, tasks_by_id: dict[int, Task]) -> bool:
+    for blocker_id in task.blocked_by:
+        blocker = tasks_by_id.get(blocker_id)
+        if blocker is None:
+            continue
+        if not blocker.done:
+            return True
+    return False
+
+
+def recurrence_period_elapsed(
+    recurrence: str,
+    *,
+    last_recurred_at: str | None,
+    created_at: str,
+    reference: datetime | None = None,
+) -> bool:
+    now = reference or datetime.now(timezone.utc)
+    anchor_raw = last_recurred_at or created_at
+    anchor = datetime.fromisoformat(anchor_raw.replace("Z", "+00:00"))
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+
+    if recurrence == "daily":
+        return anchor.date() < now.date()
+    if recurrence == "weekly":
+        return (now - anchor).days >= 7
+    if recurrence == "monthly":
+        return (now.year, now.month) > (anchor.year, anchor.month)
+    return False
 
 
 class TaskStore:
@@ -216,6 +285,8 @@ class TaskStore:
         due_date: str | None = None,
         tags: list[str] | None = None,
         status: str = "todo",
+        blocked_by: list[int] | None = None,
+        recurrence: str | None = None,
     ) -> dict[str, object]:
         title = title.strip()
         owner = owner.strip() or "Unassigned"
@@ -223,6 +294,8 @@ class TaskStore:
         due_date = validate_due_date(due_date)
         tags = normalise_tags(tags or [])
         status = validate_status(status)
+        blocked_by = normalise_blocked_by(blocked_by or [])
+        recurrence = validate_recurrence(recurrence)
 
         if not title:
             raise ValueError("Task title is required.")
@@ -234,6 +307,11 @@ class TaskStore:
         done, status = sync_done_and_status(done=False, status=status)
 
         with self._lock:
+            tasks_by_id = {task.id: task for task in self._tasks}
+            for blocker_id in blocked_by:
+                if blocker_id not in tasks_by_id:
+                    raise ValueError(f"Blocking task {blocker_id} not found.")
+
             task = Task(
                 id=next(self._ids),
                 title=title,
@@ -244,6 +322,8 @@ class TaskStore:
                 status=status,
                 due_date=due_date,
                 tags=tags,
+                blocked_by=blocked_by,
+                recurrence=recurrence,
             )
             self._tasks.append(task)
             self._save_locked()
@@ -268,6 +348,27 @@ class TaskStore:
     def update_task(self, task_id: int, fields: dict[str, object]) -> dict[str, object]:
         with self._lock:
             task = self._get_task_locked(task_id)
+            tasks_by_id = {item.id: item for item in self._tasks}
+
+            if "blocked_by" in fields:
+                blocked_by = normalise_blocked_by(fields["blocked_by"])
+                if task_id in blocked_by:
+                    raise ValueError("A task cannot block itself.")
+                for blocker_id in blocked_by:
+                    if blocker_id not in tasks_by_id:
+                        raise ValueError(f"Blocking task {blocker_id} not found.")
+
+            if "status" in fields and str(fields["status"]).lower().strip() == "doing":
+                if is_blocked(task, tasks_by_id):
+                    blockers = [
+                        blocker_id
+                        for blocker_id in task.blocked_by
+                        if blocker_id in tasks_by_id and not tasks_by_id[blocker_id].done
+                    ]
+                    raise ValueError(
+                        f"Task is blocked by incomplete tasks: {', '.join(f'#{item}' for item in blockers)}"
+                    )
+
             apply_task_fields(task, fields)
             self._save_locked()
             return task.to_dict()
@@ -358,6 +459,13 @@ class TaskStore:
             status=status,
             due_date=validate_due_date(task.get("due_date")),
             tags=normalise_tags(task.get("tags", [])),
+            blocked_by=normalise_blocked_by(task.get("blocked_by", [])),
+            recurrence=validate_recurrence(task.get("recurrence")),
+            last_recurred_at=(
+                str(task["last_recurred_at"])
+                if task.get("last_recurred_at")
+                else None
+            ),
             created_at=str(
                 task.get(
                     "created_at",
@@ -383,6 +491,42 @@ class TaskStore:
             json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def process_recurring_tasks(self) -> list[dict[str, object]]:
+        created: list[dict[str, object]] = []
+        with self._lock:
+            now = datetime.now(timezone.utc).isoformat()
+            for source in list(self._tasks):
+                if not source.recurrence:
+                    continue
+                if not recurrence_period_elapsed(
+                    source.recurrence,
+                    last_recurred_at=source.last_recurred_at,
+                    created_at=source.created_at,
+                ):
+                    continue
+
+                clone = Task(
+                    id=next(self._ids),
+                    title=source.title,
+                    owner=source.owner,
+                    priority=source.priority,
+                    minutes=source.minutes,
+                    done=False,
+                    status="todo",
+                    due_date=source.due_date,
+                    tags=list(source.tags),
+                    blocked_by=list(source.blocked_by),
+                    recurrence=None,
+                    created_at=now,
+                )
+                self._tasks.append(clone)
+                source.last_recurred_at = now
+                created.append(clone.to_dict())
+
+            if created:
+                self._save_locked()
+        return created
 
 
 def default_data_path() -> Path:
@@ -419,6 +563,9 @@ def create_store(
                 minutes=int(task["minutes"]),
                 tags=list(task.get("tags", [])),
             )
+
+    if hasattr(store, "process_recurring_tasks"):
+        store.process_recurring_tasks()
 
     return store
 

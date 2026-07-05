@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TaskPulse API
-  version: 2.0.0
+  version: 3.0.0
   description: Python standard-library API for the TaskPulse kanban task board.
 servers:
   - url: http://localhost:8000
@@ -66,6 +66,36 @@ paths:
                 properties:
                   task:
                     $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/tasks/parse:
+    post:
+      summary: Parse natural-language task text without creating a task
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  example: high priority api task for Seb due Friday 30 min #backend
+      responses:
+        "200":
+          description: Parsed task fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parsed:
+                    $ref: "#/components/schemas/ParsedTask"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -176,8 +206,12 @@ paths:
                     $ref: "#/components/schemas/Stats"
   /ws:
     get:
-      summary: WebSocket live sync
-      description: Upgrade to WebSocket; server broadcasts `{"event":"tasks_changed"}` on mutations.
+      summary: WebSocket live sync and presence
+      description: |
+        Upgrade to WebSocket. Server broadcasts:
+        - `{"event":"tasks_changed"}` after mutations
+        - `{"event":"presence_changed","clerks":["Desk Fox",...]}` on connect/disconnect
+        On connect, clients also receive `you` with their assigned clerk name.
       responses:
         "101":
           description: Switching Protocols
@@ -199,6 +233,7 @@ components:
         - done
         - status
         - tags
+        - blocked_by
         - created_at
       properties:
         id:
@@ -226,6 +261,18 @@ components:
           type: array
           items:
             type: string
+        blocked_by:
+          type: array
+          items:
+            type: integer
+        recurrence:
+          type: string
+          enum: [daily, weekly, monthly]
+          nullable: true
+        last_recurred_at:
+          type: string
+          format: date-time
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -256,6 +303,38 @@ components:
               items:
                 type: string
             - type: string
+        blocked_by:
+          type: array
+          items:
+            type: integer
+        recurrence:
+          type: string
+          enum: [daily, weekly, monthly]
+          nullable: true
+    ParsedTask:
+      type: object
+      properties:
+        title:
+          type: string
+        owner:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        minutes:
+          type: integer
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        recurrence:
+          type: string
+          enum: [daily, weekly, monthly]
+          nullable: true
     TaskUpdate:
       type: object
       properties:
@@ -284,6 +363,14 @@ components:
               items:
                 type: string
             - type: string
+        blocked_by:
+          type: array
+          items:
+            type: integer
+        recurrence:
+          type: string
+          enum: [daily, weekly, monthly]
+          nullable: true
     Stats:
       type: object
       properties:

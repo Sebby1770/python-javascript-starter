@@ -2,6 +2,26 @@
 
 All notable changes to TaskPulse are documented in this file.
 
+## [3.0.0] - 2026-07-05
+
+### Added
+
+- Natural language task input via `nlp.py` and `POST /api/tasks/parse`.
+- Quick add mode in the UI with live parse preview before submit.
+- Pomodoro timer on task cards with countdown overlay, notifications, and optional tick sound.
+- Focus mode fullscreen overlay cycling high-priority pending tasks.
+- Task dependencies with `blocked_by: list[int]`; blocked tasks cannot move to `doing`.
+- Burndown chart tracking daily pending counts in `localStorage`.
+- CLI tool: `python -m taskpulse.cli` with `add`, `list`, `done`, and `stats` commands.
+- WebSocket presence system with random clerk names and header pill.
+- Recurring tasks stub with `recurrence` field (`daily`, `weekly`, `monthly`) and auto-clone on server start.
+- Tests for NLP parsing, dependencies, recurrence, and frontend helpers.
+
+### Changed
+
+- Task model, JSON/SQLite stores, OpenAPI spec, and README updated for v3 fields and routes.
+- WebSocket hub now broadcasts `presence_changed` events alongside `tasks_changed`.
+
 ## [2.0.0] - 2026-07-05
 
 ### Added

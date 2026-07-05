@@ -7,8 +7,11 @@ from taskpulse.store import (
     TaskStore,
     create_default_store,
     create_store,
+    normalise_blocked_by,
     normalise_tags,
+    recurrence_period_elapsed,
     validate_due_date,
+    validate_recurrence,
 )
 from taskpulse.store_sqlite import SqliteTaskStore
 
@@ -234,6 +237,50 @@ class TaskStoreTest(unittest.TestCase):
             self.assertIsInstance(store, SqliteTaskStore)
             self.assertEqual(len(store.list_tasks()), 3)
 
+    def test_add_task_with_blocked_by_and_recurrence(self):
+        store = TaskStore()
+        blocker = store.add_task(title="Blocker")
+        task = store.add_task(
+            title="Dependent",
+            blocked_by=[blocker["id"]],
+            recurrence="weekly",
+        )
+
+        self.assertEqual(task["blocked_by"], [blocker["id"]])
+        self.assertEqual(task["recurrence"], "weekly")
+
+    def test_cannot_move_blocked_task_to_doing(self):
+        store = TaskStore()
+        blocker = store.add_task(title="Blocker")
+        dependent = store.add_task(title="Dependent", blocked_by=[blocker["id"]])
+
+        with self.assertRaisesRegex(ValueError, "blocked"):
+            store.update_task(dependent["id"], {"status": "doing"})
+
+        store.update_task(blocker["id"], {"status": "done", "done": True})
+        updated = store.update_task(dependent["id"], {"status": "doing"})
+        self.assertEqual(updated["status"], "doing")
+
+    def test_process_recurring_tasks_clones_daily_task(self):
+        store = TaskStore()
+        store.import_tasks(
+            [
+                {
+                    "id": 1,
+                    "title": "Standup",
+                    "recurrence": "daily",
+                    "created_at": "2026-07-04T10:00:00+00:00",
+                }
+            ]
+        )
+        created = store.process_recurring_tasks()
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["title"], "Standup")
+        self.assertIsNone(created[0]["recurrence"])
+        self.assertEqual(len(store.list_tasks()), 2)
+        self.assertIsNotNone(store.list_tasks()[0]["last_recurred_at"])
+
     def test_sqlite_store_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "tasks.db"
@@ -261,6 +308,24 @@ class ValidationHelpersTest(unittest.TestCase):
 
     def test_normalise_tags_deduplicates(self):
         self.assertEqual(normalise_tags("API, api, frontend"), ["api", "frontend"])
+
+    def test_normalise_blocked_by_deduplicates(self):
+        self.assertEqual(normalise_blocked_by([2, 2, 3]), [2, 3])
+
+    def test_validate_recurrence(self):
+        self.assertEqual(validate_recurrence("daily"), "daily")
+        self.assertIsNone(validate_recurrence(None))
+        with self.assertRaisesRegex(ValueError, "Recurrence"):
+            validate_recurrence("yearly")
+
+    def test_recurrence_period_elapsed_daily(self):
+        self.assertTrue(
+            recurrence_period_elapsed(
+                "daily",
+                last_recurred_at=None,
+                created_at="2026-07-04T10:00:00+00:00",
+            )
+        )
 
 
 if __name__ == "__main__":

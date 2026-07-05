@@ -4,11 +4,16 @@ TaskPulse is a small Python and JavaScript starter project. It pairs a standard-
 
 ## Features
 
-- Python HTTP API with health checks, task CRUD, stats, export/import, and OpenAPI docs.
+- Python HTTP API with health checks, task CRUD, stats, export/import, NLP parse, and OpenAPI docs.
 - Kanban board with To Do, Doing, and Done columns plus drag-and-drop or status buttons.
-- Task due dates, tags, inline title editing, and filters for tag and due today.
+- Task due dates, tags, dependencies (`blocked_by`), recurrence, inline title editing, and filters.
+- Natural language quick add: `high priority api task for Seb due Friday 30 min #backend`.
+- Pomodoro timer per task with countdown overlay and browser notifications.
+- Focus mode fullscreen overlay for one-task-at-a-time deep work.
+- Burndown chart showing pending task trend over the last 7 days.
 - JSON file persistence by default, with optional SQLite storage.
-- WebSocket live sync so connected clients refresh after mutations.
+- WebSocket live sync and presence ("Desk Fox", "Paper Owl", etc.).
+- CLI: `python -m taskpulse.cli add|list|done|stats`.
 - Optional API key protection for mutating routes.
 - Browser UI with search, stats dashboard, dark mode, and export/import buttons.
 - Shared task-shaping logic covered by Node's built-in test runner.
@@ -19,7 +24,7 @@ TaskPulse is a small Python and JavaScript starter project. It pairs a standard-
 
 ```text
 .
-├── src/taskpulse/        Python API, stores, and WebSocket hub
+├── src/taskpulse/        Python API, stores, NLP, CLI, and WebSocket hub
 ├── tests/                Python tests
 ├── web/                  JavaScript frontend
 ├── data/                 Runtime task persistence (gitignored)
@@ -44,7 +49,7 @@ You can also run the server directly:
 PYTHONPATH=src python3 -m taskpulse.server
 ```
 
-Tasks are loaded from `data/tasks.json` on startup by default. If the file does not exist, default sample tasks are created and saved automatically.
+Tasks are loaded from `data/tasks.json` on startup by default. If the file does not exist, default sample tasks are created and saved automatically. Recurring tasks are auto-cloned when their period has elapsed.
 
 ### Storage driver
 
@@ -59,6 +64,15 @@ SQLite data is stored at `data/tasks.db`.
 ### API key auth
 
 Set `API_KEY` to require an `X-API-Key` header on `POST`, `PATCH`, `DELETE`, and import routes. `GET` routes remain public. The browser prompts for a key when a mutation receives `401`.
+
+### CLI
+
+```bash
+PYTHONPATH=src python3 -m taskpulse.cli add "Ship release" --owner Seb --priority high
+PYTHONPATH=src python3 -m taskpulse.cli list
+PYTHONPATH=src python3 -m taskpulse.cli done 3
+PYTHONPATH=src python3 -m taskpulse.cli stats
+```
 
 ## Docker
 
@@ -89,6 +103,7 @@ GET    /api/tasks
 GET    /api/tasks/export
 GET    /api/stats
 POST   /api/tasks
+POST   /api/tasks/parse
 POST   /api/tasks/import
 PATCH  /api/tasks/{id}
 DELETE /api/tasks/{id}
@@ -105,15 +120,28 @@ Example task payload:
   "minutes": 30,
   "status": "todo",
   "due_date": "2026-07-10",
-  "tags": ["release", "planning"]
+  "tags": ["release", "planning"],
+  "blocked_by": [2],
+  "recurrence": "weekly"
 }
 ```
 
-`PATCH /api/tasks/{id}` with an empty body toggles the task's done state. Send a JSON body to update specific fields (`title`, `owner`, `priority`, `minutes`, `done`, `status`, `due_date`, `tags`).
+Natural language parse (does not create a task):
+
+```bash
+curl -X POST http://localhost:8000/api/tasks/parse \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"high priority api task for Seb due Friday 30 min #backend"}'
+```
+
+`PATCH /api/tasks/{id}` with an empty body toggles the task's done state. Send a JSON body to update specific fields (`title`, `owner`, `priority`, `minutes`, `done`, `status`, `due_date`, `tags`, `blocked_by`, `recurrence`). Tasks with incomplete blockers cannot move to `doing`.
 
 `POST /api/tasks/import` replaces all tasks with a JSON array. `GET /api/tasks/export` downloads the current task list.
 
-WebSocket clients connect to `/ws` and receive `{"event":"tasks_changed"}` after mutations.
+WebSocket clients connect to `/ws` and receive:
+
+- `{"event":"tasks_changed"}` after mutations
+- `{"event":"presence_changed","clerks":["Desk Fox","Paper Owl"]}` on connect/disconnect
 
 Stats response shape:
 

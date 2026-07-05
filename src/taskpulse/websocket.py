@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import random
 import socket
 import struct
 import threading
@@ -11,6 +13,32 @@ from typing import Callable
 
 
 WEBSOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+CLERK_ADJECTIVES = [
+    "Desk",
+    "Paper",
+    "Ink",
+    "Ledger",
+    "Quill",
+    "Archive",
+    "Index",
+    "Stamp",
+]
+
+CLERK_NOUNS = [
+    "Fox",
+    "Owl",
+    "Hare",
+    "Crane",
+    "Moth",
+    "Wren",
+    "Seal",
+    "Lynx",
+]
+
+
+def generate_clerk_name() -> str:
+    return f"{random.choice(CLERK_ADJECTIVES)} {random.choice(CLERK_NOUNS)}"
 
 
 def compute_accept(key: str) -> str:
@@ -123,20 +151,24 @@ class WebSocketConnection:
 
 class WebSocketHub:
     def __init__(self) -> None:
-        self._clients: set[WebSocketConnection] = set()
+        self._clients: dict[WebSocketConnection, str] = {}
         self._lock = Lock()
 
-    def add(self, client: WebSocketConnection) -> None:
+    def add(self, client: WebSocketConnection, name: str) -> None:
         with self._lock:
-            self._clients.add(client)
+            self._clients[client] = name
 
     def remove(self, client: WebSocketConnection) -> None:
         with self._lock:
-            self._clients.discard(client)
+            self._clients.pop(client, None)
+
+    def presence_list(self) -> list[str]:
+        with self._lock:
+            return sorted(self._clients.values())
 
     def broadcast(self, message: str) -> None:
         with self._lock:
-            clients = list(self._clients)
+            clients = list(self._clients.keys())
 
         stale: list[WebSocketConnection] = []
         for client in clients:
@@ -148,7 +180,17 @@ class WebSocketHub:
         if stale:
             with self._lock:
                 for client in stale:
-                    self._clients.discard(client)
+                    self._clients.pop(client, None)
+
+    def broadcast_presence(self) -> None:
+        self.broadcast(
+            json.dumps(
+                {
+                    "event": "presence_changed",
+                    "clerks": self.presence_list(),
+                }
+            )
+        )
 
 
 def handle_websocket_upgrade(
@@ -168,10 +210,22 @@ def handle_websocket_upgrade(
     handler.end_headers()
 
     client = WebSocketConnection(handler.connection)
-    hub.add(client)
+    clerk_name = generate_clerk_name()
+    hub.add(client, clerk_name)
+    client.send_text(
+        json.dumps(
+            {
+                "event": "presence_changed",
+                "clerks": hub.presence_list(),
+                "you": clerk_name,
+            }
+        )
+    )
+    hub.broadcast_presence()
 
     def on_close() -> None:
         hub.remove(client)
+        hub.broadcast_presence()
 
     thread = threading.Thread(
         target=client.listen,

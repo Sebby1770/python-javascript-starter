@@ -27,6 +27,10 @@ export function normaliseTask(task) {
         .map((tag) => tag.trim().toLowerCase())
         .filter(Boolean);
 
+  const blockedBy = Array.isArray(task.blocked_by)
+    ? [...new Set(task.blocked_by.map((id) => Number(id)).filter((id) => id > 0))]
+    : [];
+
   return {
     id: Number(task.id),
     title: String(task.title || "Untitled task"),
@@ -37,7 +41,28 @@ export function normaliseTask(task) {
     status,
     dueDate: task.due_date || task.dueDate || null,
     tags: [...new Set(tags)],
+    blockedBy,
+    recurrence: task.recurrence || null,
   };
+}
+
+export function isTaskBlocked(task, allTasks) {
+  const clean = normaliseTask(task);
+  if (!clean.blockedBy.length) {
+    return false;
+  }
+  const byId = new Map(allTasks.map((item) => [normaliseTask(item).id, normaliseTask(item)]));
+  return clean.blockedBy.some((blockerId) => {
+    const blocker = byId.get(blockerId);
+    return blocker && !blocker.done;
+  });
+}
+
+export function focusQueue(tasks) {
+  return tasks
+    .map(normaliseTask)
+    .filter((task) => !task.done && task.status !== "done")
+    .sort((first, second) => priorityOrder[first.priority] - priorityOrder[second.priority]);
 }
 
 export function parseTagsInput(value) {

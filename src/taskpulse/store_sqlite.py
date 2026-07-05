@@ -11,9 +11,13 @@ from .store import (
     DEFAULT_TASKS,
     Task,
     apply_task_fields,
+    is_blocked,
+    normalise_blocked_by,
     normalise_tags,
+    recurrence_period_elapsed,
     sync_done_and_status,
     validate_due_date,
+    validate_recurrence,
     validate_status,
     VALID_PRIORITIES,
 )
@@ -48,6 +52,8 @@ class SqliteTaskStore:
         due_date: str | None = None,
         tags: list[str] | None = None,
         status: str = "todo",
+        blocked_by: list[int] | None = None,
+        recurrence: str | None = None,
     ) -> dict[str, object]:
         title = title.strip()
         owner = owner.strip() or "Unassigned"
@@ -55,6 +61,8 @@ class SqliteTaskStore:
         due_date = validate_due_date(due_date)
         tags = normalise_tags(tags or [])
         status = validate_status(status)
+        blocked_by = normalise_blocked_by(blocked_by or [])
+        recurrence = validate_recurrence(recurrence)
 
         if not title:
             raise ValueError("Task title is required.")
@@ -66,14 +74,21 @@ class SqliteTaskStore:
         done, status = sync_done_and_status(done=False, status=status)
 
         with self._lock:
+            tasks_by_id = {
+                int(row["id"]): row for row in self._conn().execute("SELECT id FROM tasks")
+            }
+            for blocker_id in blocked_by:
+                if blocker_id not in tasks_by_id:
+                    raise ValueError(f"Blocking task {blocker_id} not found.")
+
             task_id = next(self._ids)
             created_at = datetime.now(timezone.utc).isoformat()
             self._conn().execute(
                 """
                 INSERT INTO tasks (
                     id, title, owner, priority, minutes, done, status,
-                    due_date, tags, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    due_date, tags, blocked_by, recurrence, last_recurred_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -85,6 +100,9 @@ class SqliteTaskStore:
                     status,
                     due_date,
                     json.dumps(tags),
+                    json.dumps(blocked_by),
+                    recurrence,
+                    None,
                     created_at,
                 ),
             )
@@ -99,6 +117,9 @@ class SqliteTaskStore:
                 "status": status,
                 "due_date": due_date,
                 "tags": tags,
+                "blocked_by": blocked_by,
+                "recurrence": recurrence,
+                "last_recurred_at": None,
                 "created_at": created_at,
             }
 
@@ -126,12 +147,37 @@ class SqliteTaskStore:
         with self._lock:
             row = self._get_row_locked(task_id)
             task = self._row_to_task(row)
+            tasks_by_id = {
+                int(item["id"]): self._row_to_task(item)
+                for item in self._conn().execute("SELECT * FROM tasks").fetchall()
+            }
+
+            if "blocked_by" in fields:
+                blocked_by = normalise_blocked_by(fields["blocked_by"])
+                if task_id in blocked_by:
+                    raise ValueError("A task cannot block itself.")
+                for blocker_id in blocked_by:
+                    if blocker_id not in tasks_by_id:
+                        raise ValueError(f"Blocking task {blocker_id} not found.")
+
+            if "status" in fields and str(fields["status"]).lower().strip() == "doing":
+                if is_blocked(task, tasks_by_id):
+                    blockers = [
+                        blocker_id
+                        for blocker_id in task.blocked_by
+                        if blocker_id in tasks_by_id and not tasks_by_id[blocker_id].done
+                    ]
+                    raise ValueError(
+                        f"Task is blocked by incomplete tasks: {', '.join(f'#{item}' for item in blockers)}"
+                    )
+
             apply_task_fields(task, fields)
             self._conn().execute(
                 """
                 UPDATE tasks
                 SET title = ?, owner = ?, priority = ?, minutes = ?, done = ?,
-                    status = ?, due_date = ?, tags = ?
+                    status = ?, due_date = ?, tags = ?, blocked_by = ?,
+                    recurrence = ?, last_recurred_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -143,6 +189,9 @@ class SqliteTaskStore:
                     task.status,
                     task.due_date,
                     json.dumps(task.tags),
+                    json.dumps(task.blocked_by),
+                    task.recurrence,
+                    task.last_recurred_at,
                     task_id,
                 ),
             )
@@ -185,8 +234,8 @@ class SqliteTaskStore:
                     """
                     INSERT INTO tasks (
                         id, title, owner, priority, minutes, done, status,
-                        due_date, tags, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        due_date, tags, blocked_by, recurrence, last_recurred_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task.id,
@@ -198,12 +247,85 @@ class SqliteTaskStore:
                         task.status,
                         task.due_date,
                         json.dumps(task.tags),
+                        json.dumps(task.blocked_by),
+                        task.recurrence,
+                        task.last_recurred_at,
                         task.created_at,
                     ),
                 )
             conn.commit()
             self._ids = count(max_id + 1)
             return [task.to_dict() for task in parsed]
+
+    def process_recurring_tasks(self) -> list[dict[str, object]]:
+        created: list[dict[str, object]] = []
+        with self._lock:
+            now = datetime.now(timezone.utc).isoformat()
+            rows = self._conn().execute(
+                "SELECT * FROM tasks WHERE recurrence IS NOT NULL"
+            ).fetchall()
+            conn = self._conn()
+
+            for row in rows:
+                source = self._row_to_task(row)
+                if not source.recurrence:
+                    continue
+                if not recurrence_period_elapsed(
+                    source.recurrence,
+                    last_recurred_at=source.last_recurred_at,
+                    created_at=source.created_at,
+                ):
+                    continue
+
+                clone_id = next(self._ids)
+                conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        id, title, owner, priority, minutes, done, status,
+                        due_date, tags, blocked_by, recurrence, last_recurred_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clone_id,
+                        source.title,
+                        source.owner,
+                        source.priority,
+                        source.minutes,
+                        0,
+                        "todo",
+                        source.due_date,
+                        json.dumps(source.tags),
+                        json.dumps(source.blocked_by),
+                        None,
+                        None,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE tasks SET last_recurred_at = ? WHERE id = ?",
+                    (now, source.id),
+                )
+                created.append(
+                    {
+                        "id": clone_id,
+                        "title": source.title,
+                        "owner": source.owner,
+                        "priority": source.priority,
+                        "minutes": source.minutes,
+                        "done": False,
+                        "status": "todo",
+                        "due_date": source.due_date,
+                        "tags": list(source.tags),
+                        "blocked_by": list(source.blocked_by),
+                        "recurrence": None,
+                        "last_recurred_at": None,
+                        "created_at": now,
+                    }
+                )
+
+            if created:
+                conn.commit()
+        return created
 
     def _init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,11 +342,28 @@ class SqliteTaskStore:
                 status TEXT NOT NULL,
                 due_date TEXT,
                 tags TEXT NOT NULL,
+                blocked_by TEXT NOT NULL DEFAULT '[]',
+                recurrence TEXT,
+                last_recurred_at TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
+        self._migrate_schema(conn)
         conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "blocked_by" not in columns:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN blocked_by TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "recurrence" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT")
+        if "last_recurred_at" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN last_recurred_at TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -242,10 +381,6 @@ class SqliteTaskStore:
             max_id = int(row["max_id"] or 0)
             self._ids = count(max_id + 1)
 
-    def _task_count_locked(self) -> int:
-        row = self._conn().execute("SELECT COUNT(*) AS total FROM tasks").fetchone()
-        return int(row["total"])
-
     def _seed_defaults_locked(self) -> None:
         conn = self._conn()
         for task in DEFAULT_TASKS:
@@ -256,8 +391,8 @@ class SqliteTaskStore:
                 """
                 INSERT INTO tasks (
                     id, title, owner, priority, minutes, done, status,
-                    due_date, tags, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    due_date, tags, blocked_by, recurrence, last_recurred_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -269,6 +404,9 @@ class SqliteTaskStore:
                     "todo",
                     None,
                     json.dumps(tags),
+                    "[]",
+                    None,
+                    None,
                     created_at,
                 ),
             )
@@ -290,6 +428,7 @@ class SqliteTaskStore:
         done = bool(row["done"])
         status = str(row["status"])
         done, status = sync_done_and_status(done=done, status=status)
+        blocked_raw = row["blocked_by"] if "blocked_by" in row.keys() else "[]"
         return Task(
             id=int(row["id"]),
             title=str(row["title"]),
@@ -300,6 +439,13 @@ class SqliteTaskStore:
             status=status,
             due_date=validate_due_date(row["due_date"]),
             tags=normalise_tags(json.loads(row["tags"] or "[]")),
+            blocked_by=normalise_blocked_by(json.loads(blocked_raw or "[]")),
+            recurrence=validate_recurrence(row["recurrence"] if "recurrence" in row.keys() else None),
+            last_recurred_at=(
+                str(row["last_recurred_at"])
+                if "last_recurred_at" in row.keys() and row["last_recurred_at"]
+                else None
+            ),
             created_at=str(row["created_at"]),
         )
 
@@ -317,6 +463,13 @@ class SqliteTaskStore:
             status=status,
             due_date=validate_due_date(task.get("due_date")),
             tags=normalise_tags(task.get("tags", [])),
+            blocked_by=normalise_blocked_by(task.get("blocked_by", [])),
+            recurrence=validate_recurrence(task.get("recurrence")),
+            last_recurred_at=(
+                str(task["last_recurred_at"])
+                if task.get("last_recurred_at")
+                else None
+            ),
             created_at=str(
                 task.get("created_at", datetime.now(timezone.utc).isoformat())
             ),
