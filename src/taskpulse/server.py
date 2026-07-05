@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +13,7 @@ from .store import TaskStore, create_default_store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PROJECT_ROOT / "web"
+TASK_ROUTE = re.compile(r"^/api/tasks/(?P<task_id>\d+)$")
 
 
 class TaskPulseHandler(BaseHTTPRequestHandler):
@@ -26,6 +28,10 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
 
         if path == "/api/tasks":
             self.send_json({"tasks": self.store.list_tasks()})
+            return
+
+        if path == "/api/stats":
+            self.send_json({"stats": self.store.get_stats()})
             return
 
         self.serve_static(path)
@@ -50,6 +56,55 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             return
 
         self.send_json({"task": task}, status=HTTPStatus.CREATED)
+
+    def do_PATCH(self) -> None:
+        path = urlparse(self.path).path
+        match = TASK_ROUTE.match(path)
+
+        if not match:
+            self.send_error(HTTPStatus.NOT_FOUND, "Route not found.")
+            return
+
+        task_id = int(match.group("task_id"))
+
+        try:
+            payload = self.read_json()
+            if not payload:
+                task = self.store.toggle_task(task_id)
+            else:
+                task = self.store.update_task(task_id, payload)
+        except KeyError:
+            self.send_json(
+                {"error": f"Task {task_id} not found."},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self.send_json({"task": task})
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        match = TASK_ROUTE.match(path)
+
+        if not match:
+            self.send_error(HTTPStatus.NOT_FOUND, "Route not found.")
+            return
+
+        task_id = int(match.group("task_id"))
+
+        try:
+            task = self.store.delete_task(task_id)
+        except KeyError:
+            self.send_json(
+                {"error": f"Task {task_id} not found."},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+
+        self.send_json({"task": task})
 
     def read_json(self) -> dict[str, object]:
         content_length = int(self.headers.get("content-length", "0"))

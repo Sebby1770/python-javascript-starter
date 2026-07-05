@@ -4,50 +4,115 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TaskPulse</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,400&family=DM+Serif+Display&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="app-shell">
-      <section class="panel composer" aria-labelledby="new-task-title">
-        <div>
-          <p class="eyebrow">Python + JavaScript</p>
-          <h1 id="new-task-title">TaskPulse</h1>
-        </div>
-
-        <form data-task-form class="task-form">
-          <label>
-            Task
-            <input name="title" type="text" placeholder="Design the API route" required />
-          </label>
-
-          <label>
-            Owner
-            <input name="owner" type="text" placeholder="Seb" />
-          </label>
-
-          <div class="form-grid">
-            <label>
-              Priority
-              <select name="priority">
-                <option value="high">High</option>
-                <option value="medium" selected>Medium</option>
-                <option value="low">Low</option>
-              </select>
-            </label>
-
-            <label>
-              Minutes
-              <input name="minutes" type="number" value="25" min="1" max="240" />
-            </label>
+      <aside class="sidebar">
+        <section class="panel composer" aria-labelledby="new-task-title">
+          <div class="composer-header">
+            <div>
+              <p class="eyebrow">Python + JavaScript</p>
+              <h1 id="new-task-title">TaskPulse</h1>
+            </div>
+            <button
+              type="button"
+              class="theme-toggle"
+              data-theme-toggle
+              aria-pressed="false"
+            >
+              Dark mode
+            </button>
           </div>
 
-          <button type="submit">Add task</button>
-        </form>
+          <form data-task-form class="task-form">
+            <label>
+              Task
+              <input name="title" type="text" placeholder="Design the API route" required />
+            </label>
 
-        <p data-status class="status" role="status">Starting...</p>
-      </section>
+            <label>
+              Owner
+              <input name="owner" type="text" placeholder="Seb" />
+            </label>
+
+            <div class="form-grid">
+              <label>
+                Priority
+                <select name="priority">
+                  <option value="high">High</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </label>
+
+              <label>
+                Minutes
+                <input name="minutes" type="number" value="25" min="1" max="240" />
+              </label>
+            </div>
+
+            <button type="submit" class="primary-button">Add task</button>
+          </form>
+
+          <p data-status class="status" role="status">Starting...</p>
+        </section>
+
+        <section class="panel stats-panel" data-stats aria-label="Task statistics">
+          <h2 class="stats-title">Overview</h2>
+          <div class="stats-grid">
+            <article class="stat-card">
+              <p class="stat-label">Total</p>
+              <p class="stat-value" data-stat-total>0</p>
+            </article>
+            <article class="stat-card">
+              <p class="stat-label">Completed</p>
+              <p class="stat-value" data-stat-completed>0</p>
+            </article>
+            <article class="stat-card">
+              <p class="stat-label">Pending</p>
+              <p class="stat-value" data-stat-pending>0</p>
+            </article>
+          </div>
+
+          <h3 class="stats-subtitle">Minutes by priority</h3>
+          <ul class="priority-stats">
+            <li>
+              <span class="priority-pill priority-pill--high">High</span>
+              <span data-stat-minutes-high>0 minutes</span>
+            </li>
+            <li>
+              <span class="priority-pill priority-pill--medium">Medium</span>
+              <span data-stat-minutes-medium>0 minutes</span>
+            </li>
+            <li>
+              <span class="priority-pill priority-pill--low">Low</span>
+              <span data-stat-minutes-low>0 minutes</span>
+            </li>
+          </ul>
+        </section>
+      </aside>
 
       <section class="task-board" aria-label="Task board">
+        <div class="board-toolbar">
+          <label class="search-field">
+            <span class="visually-hidden">Search tasks</span>
+            <input
+              data-search
+              type="search"
+              placeholder="Search by title, owner, or priority..."
+              autocomplete="off"
+            />
+          </label>
+        </div>
+
+        <p data-empty-state class="empty-state" hidden>No tasks yet. Add one to get started.</p>
         <div data-task-list class="task-list"></div>
       </section>
     </main>
@@ -55,11 +120,15 @@
     <template data-task-template>
       <article class="task-card">
         <span class="priority-dot" aria-hidden="true"></span>
-        <div>
+        <div class="task-card-body">
           <h2 data-task-title></h2>
           <p data-task-owner></p>
         </div>
-        <p data-task-summary></p>
+        <p data-task-summary class="task-card-summary"></p>
+        <div class="task-card-actions">
+          <button type="button" class="ghost-button" data-complete-task>Complete</button>
+          <button type="button" class="danger-button" data-delete-task>Delete</button>
+        </div>
       </article>
     </template>
 
