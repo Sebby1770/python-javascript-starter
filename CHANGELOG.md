@@ -2,6 +2,20 @@
 
 All notable changes to TaskPulse are documented in this file.
 
+## [6.0.0] - 2026-08-19
+
+### Added
+
+- `due_soon_tasks()` plus `GET /api/tasks/soon?days=` for work due in the next 1-90 days.
+- `snooze_task()` plus `POST /api/tasks/{id}/snooze` to push a due date forward (overdue items start from today).
+- `duplicate_task()` plus `POST /api/tasks/{id}/duplicate` to clone a task as a fresh todo.
+- `due_soon_count` on stats.
+- CLI commands: `soon`, `snooze`, and `duplicate`.
+
+### Changed
+
+- Package version aligned to `6.0.0` across Python, npm, and OpenAPI.
+
 ## [5.0.0] - 2026-08-19
 
 ### Added

@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .nlp import parse_task_text
-from .store import TaskStoreProtocol, create_store
+from .store import TaskStoreProtocol, create_store, validate_horizon_days
 from .websocket import WebSocketHub, handle_websocket_upgrade
 
 
@@ -18,6 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PROJECT_ROOT / "web"
 OPENAPI_PATH = PROJECT_ROOT / "openapi.yaml"
 TASK_ROUTE = re.compile(r"^/api/tasks/(?P<task_id>\d+)$")
+TASK_SNOOZE_ROUTE = re.compile(r"^/api/tasks/(?P<task_id>\d+)/snooze$")
+TASK_DUPLICATE_ROUTE = re.compile(r"^/api/tasks/(?P<task_id>\d+)/duplicate$")
 API_KEY = os.environ.get("API_KEY", "").strip() or None
 WS_HUB = WebSocketHub()
 
@@ -55,6 +57,16 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             self.send_json({"tasks": self.store.overdue_tasks()})
             return
 
+        if path == "/api/tasks/soon":
+            raw_days = parse_qs(urlparse(self.path).query).get("days", ["7"])[0]
+            try:
+                days = validate_horizon_days(raw_days)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"tasks": self.store.due_soon_tasks(days=days)})
+            return
+
         if path == "/api/tasks/export":
             self.export_tasks()
             return
@@ -71,6 +83,48 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        snooze_match = TASK_SNOOZE_ROUTE.match(path)
+        if snooze_match:
+            if not self.require_api_key():
+                return
+            try:
+                payload = self.read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Snooze payload must be a JSON object.")
+                days = validate_horizon_days(payload.get("days", 7))
+                task = self.store.snooze_task(int(snooze_match.group("task_id")), days=days)
+            except KeyError:
+                self.send_json(
+                    {"error": f"Task {snooze_match.group('task_id')} not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.broadcast_change()
+            self.send_json({"task": task})
+            return
+
+        duplicate_match = TASK_DUPLICATE_ROUTE.match(path)
+        if duplicate_match:
+            if not self.require_api_key():
+                return
+            try:
+                task = self.store.duplicate_task(int(duplicate_match.group("task_id")))
+            except KeyError:
+                self.send_json(
+                    {"error": f"Task {duplicate_match.group('task_id')} not found."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            except (ValueError, TypeError) as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.broadcast_change()
+            self.send_json({"task": task}, status=HTTPStatus.CREATED)
+            return
 
         if path == "/api/tasks/archive":
             if not self.require_api_key():

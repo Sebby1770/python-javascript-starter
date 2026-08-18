@@ -22,8 +22,11 @@ from .store import (
     normalise_tags,
     recurrence_period_elapsed,
     sync_done_and_status,
+    snooze_due_date,
+    task_is_due_soon,
     task_is_overdue,
     task_matches_query,
+    validate_horizon_days,
     validate_due_date,
     validate_recurrence,
     validate_sprint,
@@ -295,6 +298,7 @@ class SqliteTaskStore:
             by_sprint: dict[str, dict[str, object]] = {}
 
             overdue_count = 0
+            due_soon_count = 0
             for row in rows:
                 task = self._row_to_task(row)
                 minutes_by_priority[task.priority] += task.minutes
@@ -303,6 +307,8 @@ class SqliteTaskStore:
                 actual_minutes += actual
                 if task_is_overdue(task):
                     overdue_count += 1
+                if task_is_due_soon(task):
+                    due_soon_count += 1
 
                 sprint_key = task.sprint or "unassigned"
                 if sprint_key not in by_sprint:
@@ -335,6 +341,7 @@ class SqliteTaskStore:
                 "actual_minutes": actual_minutes,
                 "by_sprint": by_sprint,
                 "overdue_count": overdue_count,
+                "due_soon_count": due_soon_count,
             }
 
     def search_tasks(self, query: str) -> list[dict[str, object]]:
@@ -358,6 +365,87 @@ class SqliteTaskStore:
                 for row in rows
                 if task_is_overdue(self._row_to_task(row), today)
             ]
+
+    def due_soon_tasks(
+        self, days: int = 7, today: date | None = None
+    ) -> list[dict[str, object]]:
+        days = validate_horizon_days(days)
+        with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM tasks ORDER BY id ASC"
+            ).fetchall()
+            return [
+                self._row_to_dict(row)
+                for row in rows
+                if task_is_due_soon(self._row_to_task(row), days, today)
+            ]
+
+    def snooze_task(
+        self, task_id: int, days: int = 7, today: date | None = None
+    ) -> dict[str, object]:
+        days = validate_horizon_days(days)
+        with self._lock:
+            row = self._get_row_locked(task_id)
+            task = self._row_to_task(row)
+            if task.done:
+                raise ValueError("Cannot snooze a completed task.")
+            previous = task.to_dict()
+            task.due_date = snooze_due_date(task.due_date, days, today)
+            self._conn().execute(
+                "UPDATE tasks SET due_date = ? WHERE id = ?",
+                (task.due_date, task.id),
+            )
+            self._push_undo_locked("update", {"task_id": task_id, "previous": previous})
+            self._log_activity_locked(
+                "task_snoozed",
+                task.id,
+                f'Snoozed "{task.title}" to {task.due_date}',
+            )
+            self._conn().commit()
+            return task.to_dict()
+
+    def duplicate_task(self, task_id: int) -> dict[str, object]:
+        with self._lock:
+            source = self._row_to_task(self._get_row_locked(task_id))
+            title = source.title
+            copy_title = title if title.endswith(" (copy)") else f"{title} (copy)"
+            new_id = next(self._ids)
+            created_at = datetime.now(timezone.utc).isoformat()
+            self._conn().execute(
+                """
+                INSERT INTO tasks (
+                    id, title, owner, priority, minutes, done, status,
+                    due_date, tags, blocked_by, recurrence, last_recurred_at,
+                    actual_minutes, started_at, sprint, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id,
+                    copy_title,
+                    source.owner,
+                    source.priority,
+                    source.minutes,
+                    0,
+                    "todo",
+                    source.due_date,
+                    json.dumps(source.tags),
+                    json.dumps(source.blocked_by),
+                    source.recurrence,
+                    None,
+                    0,
+                    None,
+                    source.sprint,
+                    created_at,
+                ),
+            )
+            self._push_undo_locked("add", {"task_id": new_id})
+            self._log_activity_locked(
+                "task_duplicated",
+                new_id,
+                f'Duplicated "{source.title}"',
+            )
+            self._conn().commit()
+            return self._row_to_dict(self._get_row_locked(new_id))
 
     def archive_done(self) -> list[dict[str, object]]:
         with self._lock:

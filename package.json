@@ -1,6 +1,6 @@
 {
   "name": "taskpulse",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "A tiny Python API and JavaScript frontend starter.",
   "type": "module",
   "private": true,

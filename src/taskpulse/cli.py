@@ -49,6 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("query", help="Search query")
 
     subparsers.add_parser("overdue", help="List overdue incomplete tasks")
+
+    soon_parser = subparsers.add_parser("soon", help="List tasks due within a number of days")
+    soon_parser.add_argument("--days", type=int, default=7, help="Lookahead window (1-90)")
+
+    snooze_parser = subparsers.add_parser("snooze", help="Push a task due date forward")
+    snooze_parser.add_argument("task_id", type=int, help="Task ID")
+    snooze_parser.add_argument("--days", type=int, default=7, help="Days to snooze")
+
+    duplicate_parser = subparsers.add_parser("duplicate", help="Clone a task as a new todo")
+    duplicate_parser.add_argument("task_id", type=int, help="Task ID")
+
     subparsers.add_parser("archive", help="Remove completed tasks from the board")
 
     done_parser = subparsers.add_parser("done", help="Mark a task as done")
@@ -133,6 +144,28 @@ def cmd_overdue(store, _args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_soon(store, args: argparse.Namespace) -> int:
+    tasks = store.due_soon_tasks(days=args.days)
+    if not tasks:
+        print("No upcoming tasks.")
+        return 0
+    for task in tasks:
+        print(format_task_line(task))
+    return 0
+
+
+def cmd_snooze(store, args: argparse.Namespace) -> int:
+    task = store.snooze_task(args.task_id, days=args.days)
+    print(f"Snoozed #{task['id']} to {task['due_date']}: {task['title']}")
+    return 0
+
+
+def cmd_duplicate(store, args: argparse.Namespace) -> int:
+    task = store.duplicate_task(args.task_id)
+    print(json.dumps(task, indent=2))
+    return 0
+
+
 def cmd_archive(store, _args: argparse.Namespace) -> int:
     archived = store.archive_done()
     print(json.dumps({"archived": len(archived), "tasks": archived}, indent=2))
@@ -161,6 +194,9 @@ def main(argv: list[str] | None = None) -> int:
         "list": cmd_list,
         "search": cmd_search,
         "overdue": cmd_overdue,
+        "soon": cmd_soon,
+        "snooze": cmd_snooze,
+        "duplicate": cmd_duplicate,
         "archive": cmd_archive,
         "done": cmd_done,
         "stats": cmd_stats,

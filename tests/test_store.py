@@ -170,6 +170,7 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(stats["estimated_minutes"], 60)
         self.assertEqual(stats["actual_minutes"], 0)
         self.assertEqual(stats["overdue_count"], 0)
+        self.assertIn("due_soon_count", stats)
 
     def test_add_task_with_sprint_and_time_tracking_fields(self):
         store = TaskStore()
@@ -440,6 +441,65 @@ class TaskStoreTest(unittest.TestCase):
             self.assertEqual(len(store.list_tasks()), 1)
             store.undo_last()
             self.assertEqual(len(store.list_tasks()), 2)
+
+    def test_due_soon_excludes_overdue_and_done_tasks(self):
+        store = TaskStore()
+        today = date(2026, 8, 19)
+        store.add_task(title="Today", due_date="2026-08-19")
+        store.add_task(title="In window", due_date="2026-08-26")
+        store.add_task(title="Too far", due_date="2026-08-27")
+        store.add_task(title="Overdue", due_date="2026-08-01")
+        done = store.add_task(title="Done soon", due_date="2026-08-20")
+        store.update_task(done["id"], {"status": "done"})
+
+        soon = store.due_soon_tasks(days=7, today=today)
+        self.assertEqual(
+            [task["title"] for task in soon],
+            ["Today", "In window"],
+        )
+
+    def test_snooze_moves_overdue_from_today_and_can_undo(self):
+        store = TaskStore()
+        today = date(2026, 8, 19)
+        late = store.add_task(title="Late ship", due_date="2026-01-01")
+        future = store.add_task(title="Future ship", due_date="2026-09-01")
+
+        snoozed = store.snooze_task(late["id"], days=7, today=today)
+        self.assertEqual(snoozed["due_date"], "2026-08-26")
+        still_future = store.snooze_task(future["id"], days=7, today=today)
+        self.assertEqual(still_future["due_date"], "2026-09-08")
+
+        store.undo_last()
+        restored = next(task for task in store.list_tasks() if task["id"] == future["id"])
+        self.assertEqual(restored["due_date"], "2026-09-01")
+
+    def test_duplicate_creates_todo_copy(self):
+        store = TaskStore()
+        source = store.add_task(
+            title="Write docs",
+            owner="Seb",
+            priority="high",
+            tags=["docs"],
+            due_date="2026-08-20",
+        )
+        store.update_task(source["id"], {"status": "doing"})
+
+        copy = store.duplicate_task(source["id"])
+        self.assertEqual(copy["title"], "Write docs (copy)")
+        self.assertEqual(copy["owner"], "Seb")
+        self.assertEqual(copy["priority"], "high")
+        self.assertEqual(copy["tags"], ["docs"])
+        self.assertEqual(copy["status"], "todo")
+        self.assertFalse(copy["done"])
+        self.assertNotEqual(copy["id"], source["id"])
+        self.assertEqual(len(store.list_tasks()), 2)
+
+    def test_cannot_snooze_completed_task(self):
+        store = TaskStore()
+        done = store.add_task(title="Finished")
+        store.update_task(done["id"], {"status": "done"})
+        with self.assertRaisesRegex(ValueError, "snooze"):
+            store.snooze_task(done["id"], days=3)
 
 
 class ValidationHelpersTest(unittest.TestCase):
