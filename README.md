@@ -19,7 +19,8 @@ TaskPulse is a small Python and JavaScript starter project. It pairs a standard-
 - Burndown chart showing pending task trend over the last 7 days.
 - JSON file persistence by default, with optional SQLite storage.
 - WebSocket live sync and presence ("Desk Fox", "Paper Owl", etc.).
-- CLI: `python -m taskpulse.cli add|list|done|stats`.
+- CLI: `python -m taskpulse.cli add|list|search|overdue|archive|done|stats`.
+- Search (`GET /api/tasks?q=`), overdue list, and archive-done for completed work.
 - Optional API key protection for mutating routes.
 - Browser UI with search, stats dashboard, dark mode, and export/import buttons.
 - Shared task-shaping logic covered by Node's built-in test runner.
@@ -76,7 +77,10 @@ Set `API_KEY` to require an `X-API-Key` header on `POST`, `PATCH`, `DELETE`, and
 ```bash
 PYTHONPATH=src python3 -m taskpulse.cli add "Ship release" --owner Seb --priority high
 PYTHONPATH=src python3 -m taskpulse.cli list
+PYTHONPATH=src python3 -m taskpulse.cli search api
+PYTHONPATH=src python3 -m taskpulse.cli overdue
 PYTHONPATH=src python3 -m taskpulse.cli done 3
+PYTHONPATH=src python3 -m taskpulse.cli archive
 PYTHONPATH=src python3 -m taskpulse.cli stats
 ```
 

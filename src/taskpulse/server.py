@@ -7,7 +7,7 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .nlp import parse_task_text
 from .store import TaskStoreProtocol, create_store
@@ -44,7 +44,15 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/tasks":
-            self.send_json({"tasks": self.store.list_tasks()})
+            query = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            if query.strip():
+                self.send_json({"tasks": self.store.search_tasks(query)})
+            else:
+                self.send_json({"tasks": self.store.list_tasks()})
+            return
+
+        if path == "/api/tasks/overdue":
+            self.send_json({"tasks": self.store.overdue_tasks()})
             return
 
         if path == "/api/tasks/export":
@@ -63,6 +71,14 @@ class TaskPulseHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        if path == "/api/tasks/archive":
+            if not self.require_api_key():
+                return
+            archived = self.store.archive_done()
+            self.broadcast_change()
+            self.send_json({"tasks": archived})
+            return
 
         if path == "/api/tasks/import":
             if not self.require_api_key():
