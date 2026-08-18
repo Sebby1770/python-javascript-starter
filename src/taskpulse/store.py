@@ -5,7 +5,7 @@ import json
 import os
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
 from threading import Lock
@@ -25,6 +25,8 @@ VALID_ACTIVITY_EVENTS = {
     "time_tracked",
     "undo",
     "task_archived",
+    "task_snoozed",
+    "task_duplicated",
 }
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAX_ACTIVITY_EVENTS = 50
@@ -129,6 +131,16 @@ class TaskStoreProtocol(Protocol):
     def overdue_tasks(self, today: date | None = None) -> list[dict[str, object]]: ...
 
     def archive_done(self) -> list[dict[str, object]]: ...
+
+    def due_soon_tasks(
+        self, days: int = 7, today: date | None = None
+    ) -> list[dict[str, object]]: ...
+
+    def snooze_task(
+        self, task_id: int, days: int = 7, today: date | None = None
+    ) -> dict[str, object]: ...
+
+    def duplicate_task(self, task_id: int) -> dict[str, object]: ...
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]: ...
 
@@ -307,6 +319,39 @@ def task_is_overdue(task: Task, today: date | None = None) -> bool:
     if task.done or not task.due_date:
         return False
     return date.fromisoformat(task.due_date) < (today or date.today())
+
+
+def validate_horizon_days(value: object, default: int = 7) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("days must be an integer.") from exc
+    if days < 1 or days > 90:
+        raise ValueError("days must be between 1 and 90.")
+    return days if value is not None else default
+
+
+def task_is_due_soon(
+    task: Task, days: int = 7, today: date | None = None
+) -> bool:
+    if task.done or not task.due_date:
+        return False
+    current = today or date.today()
+    due = date.fromisoformat(task.due_date)
+    return current <= due <= current + timedelta(days=days)
+
+
+def snooze_due_date(
+    due_date: str | None, days: int, today: date | None = None
+) -> str:
+    days = validate_horizon_days(days)
+    current = today or date.today()
+    if due_date:
+        existing = date.fromisoformat(due_date)
+        start = existing if existing > current else current
+    else:
+        start = current
+    return (start + timedelta(days=days)).isoformat()
 
 
 def is_blocked(task: Task, tasks_by_id: dict[int, Task]) -> bool:
@@ -570,6 +615,9 @@ class TaskStore:
                 "overdue_count": sum(
                     1 for task in self._tasks if task_is_overdue(task)
                 ),
+                "due_soon_count": sum(
+                    1 for task in self._tasks if task_is_due_soon(task)
+                ),
             }
 
     def search_tasks(self, query: str) -> list[dict[str, object]]:
@@ -587,6 +635,65 @@ class TaskStore:
                 for task in self._tasks
                 if task_is_overdue(task, today)
             ]
+
+    def due_soon_tasks(
+        self, days: int = 7, today: date | None = None
+    ) -> list[dict[str, object]]:
+        days = validate_horizon_days(days)
+        with self._lock:
+            return [
+                task.to_dict()
+                for task in self._tasks
+                if task_is_due_soon(task, days, today)
+            ]
+
+    def snooze_task(
+        self, task_id: int, days: int = 7, today: date | None = None
+    ) -> dict[str, object]:
+        days = validate_horizon_days(days)
+        with self._lock:
+            task = self._get_task_locked(task_id)
+            if task.done:
+                raise ValueError("Cannot snooze a completed task.")
+            previous = task.to_dict()
+            task.due_date = snooze_due_date(task.due_date, days, today)
+            self._push_undo_locked("update", {"task_id": task_id, "previous": previous})
+            self._log_activity_locked(
+                "task_snoozed",
+                task.id,
+                f'Snoozed "{task.title}" to {task.due_date}',
+            )
+            self._save_locked()
+            return task.to_dict()
+
+    def duplicate_task(self, task_id: int) -> dict[str, object]:
+        with self._lock:
+            source = self._get_task_locked(task_id)
+            title = source.title
+            copy_title = title if title.endswith(" (copy)") else f"{title} (copy)"
+            task = Task(
+                id=next(self._ids),
+                title=copy_title,
+                owner=source.owner,
+                priority=source.priority,
+                minutes=source.minutes,
+                done=False,
+                status="todo",
+                due_date=source.due_date,
+                tags=list(source.tags),
+                blocked_by=list(source.blocked_by),
+                recurrence=source.recurrence,
+                sprint=source.sprint,
+            )
+            self._tasks.append(task)
+            self._push_undo_locked("add", {"task_id": task.id})
+            self._log_activity_locked(
+                "task_duplicated",
+                task.id,
+                f'Duplicated "{source.title}"',
+            )
+            self._save_locked()
+            return task.to_dict()
 
     def archive_done(self) -> list[dict[str, object]]:
         with self._lock:

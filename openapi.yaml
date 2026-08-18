@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TaskPulse API
-  version: 5.0.0
+  version: 6.0.0
   description: Python standard-library API for the TaskPulse kanban task board.
 servers:
   - url: http://localhost:8000
@@ -122,6 +122,95 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Task"
+  /api/tasks/soon:
+    get:
+      summary: List incomplete tasks due within a lookahead window
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+      responses:
+        "200":
+          description: Upcoming tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/tasks/{id}/snooze:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Push a task due date forward
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days:
+                  type: integer
+                  minimum: 1
+                  maximum: 90
+                  default: 7
+      responses:
+        "200":
+          description: Task snoozed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/tasks/{id}/duplicate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Clone a task as a new todo
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "201":
+          description: Task duplicated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/tasks/archive:
     post:
       summary: Remove completed tasks from the board
@@ -494,6 +583,8 @@ components:
           type: integer
         overdue_count:
           type: integer
+        due_soon_count:
+          type: integer
         by_sprint:
           type: object
           additionalProperties:
@@ -524,6 +615,8 @@ components:
             - time_tracked
             - undo
             - task_archived
+            - task_snoozed
+            - task_duplicated
         task_id:
           type: integer
           nullable: true

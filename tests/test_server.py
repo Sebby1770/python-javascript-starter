@@ -118,6 +118,7 @@ class ServerTest(unittest.TestCase):
         self.assertIn("actual_minutes", data["stats"])
         self.assertIn("by_sprint", data["stats"])
         self.assertIn("overdue_count", data["stats"])
+        self.assertIn("due_soon_count", data["stats"])
 
     def test_search_overdue_and_archive_endpoints(self):
         self._request("POST", "/api/tasks", payload={"title": "Find API notes", "tags": ["api"]})
@@ -144,6 +145,32 @@ class ServerTest(unittest.TestCase):
         status, archived = self._request("POST", "/api/tasks/archive")
         self.assertEqual(status, 200)
         self.assertTrue(any(task["title"] == "Archive later" for task in archived["tasks"]))
+
+    def test_soon_snooze_and_duplicate_endpoints(self):
+        status, created = self._request(
+            "POST",
+            "/api/tasks",
+            payload={"title": "Snooze me", "due_date": "2020-01-01"},
+        )
+        self.assertEqual(status, 201)
+        task_id = created["task"]["id"]
+
+        status, snoozed = self._request(
+            "POST",
+            f"/api/tasks/{task_id}/snooze",
+            payload={"days": 7},
+        )
+        self.assertEqual(status, 200)
+        self.assertGreater(snoozed["task"]["due_date"], "2020-01-01")
+
+        status, duplicated = self._request("POST", f"/api/tasks/{task_id}/duplicate")
+        self.assertEqual(status, 201)
+        self.assertEqual(duplicated["task"]["title"], "Snooze me (copy)")
+        self.assertEqual(duplicated["task"]["status"], "todo")
+
+        status, soon = self._request("GET", "/api/tasks/soon?days=90")
+        self.assertEqual(status, 200)
+        self.assertIn("tasks", soon)
 
     def test_api_key_required_for_mutations_when_set(self):
         original = server_module.API_KEY
