@@ -1,7 +1,7 @@
 [project]
 name = "taskpulse"
-version = "0.1.0"
-description = "A tiny Python API and JavaScript frontend starter."
+version = "5.0.0"
+description = "A Python API and JavaScript frontend for a kanban task board."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -117,6 +117,33 @@ class ServerTest(unittest.TestCase):
         self.assertIn("estimated_minutes", data["stats"])
         self.assertIn("actual_minutes", data["stats"])
         self.assertIn("by_sprint", data["stats"])
+        self.assertIn("overdue_count", data["stats"])
+
+    def test_search_overdue_and_archive_endpoints(self):
+        self._request("POST", "/api/tasks", payload={"title": "Find API notes", "tags": ["api"]})
+        self._request(
+            "POST",
+            "/api/tasks",
+            payload={"title": "Overdue ship", "due_date": "2020-01-01"},
+        )
+        done = self._request("POST", "/api/tasks", payload={"title": "Archive later"})
+        self._request(
+            "PATCH",
+            f"/api/tasks/{done[1]['task']['id']}",
+            payload={"status": "done"},
+        )
+
+        status, found = self._request("GET", "/api/tasks?q=api")
+        self.assertEqual(status, 200)
+        self.assertTrue(any("API" in task["title"] for task in found["tasks"]))
+
+        status, overdue = self._request("GET", "/api/tasks/overdue")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(task["title"] == "Overdue ship" for task in overdue["tasks"]))
+
+        status, archived = self._request("POST", "/api/tasks/archive")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(task["title"] == "Archive later" for task in archived["tasks"]))
 
     def test_api_key_required_for_mutations_when_set(self):
         original = server_module.API_KEY

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TaskPulse API
-  version: 4.0.0
+  version: 5.0.0
   description: Python standard-library API for the TaskPulse kanban task board.
 servers:
   - url: http://localhost:8000
@@ -34,6 +34,13 @@ paths:
   /api/tasks:
     get:
       summary: List tasks
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Case-insensitive search across title, owner, and tags
       responses:
         "200":
           description: Task list
@@ -98,6 +105,40 @@ paths:
                     $ref: "#/components/schemas/ParsedTask"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/tasks/overdue:
+    get:
+      summary: List incomplete tasks whose due date is before today
+      responses:
+        "200":
+          description: Overdue tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+  /api/tasks/archive:
+    post:
+      summary: Remove completed tasks from the board
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Archived tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
         "401":
           $ref: "#/components/responses/Unauthorized"
   /api/tasks/export:
@@ -451,6 +492,8 @@ components:
           type: integer
         actual_minutes:
           type: integer
+        overdue_count:
+          type: integer
         by_sprint:
           type: object
           additionalProperties:
@@ -480,6 +523,7 @@ components:
             - task_imported
             - time_tracked
             - undo
+            - task_archived
         task_id:
           type: integer
           nullable: true

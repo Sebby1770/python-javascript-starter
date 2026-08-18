@@ -45,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List all tasks")
 
+    search_parser = subparsers.add_parser("search", help="Search tasks by title, owner, or tag")
+    search_parser.add_argument("query", help="Search query")
+
+    subparsers.add_parser("overdue", help="List overdue incomplete tasks")
+    subparsers.add_parser("archive", help="Remove completed tasks from the board")
+
     done_parser = subparsers.add_parser("done", help="Mark a task as done")
     done_parser.add_argument("task_id", type=int, help="Task ID")
 
@@ -81,6 +87,21 @@ def cmd_add(store, args: argparse.Namespace) -> int:
     return 0
 
 
+def format_task_line(task: dict) -> str:
+    status = task["status"]
+    blocked = task.get("blocked_by") or []
+    blocked_label = f" blocked_by={blocked}" if blocked else ""
+    recurrence = task.get("recurrence")
+    recurrence_label = f" recurrence={recurrence}" if recurrence else ""
+    due = task.get("due_date")
+    due_label = f" due={due}" if due else ""
+    return (
+        f"#{task['id']} [{status}] {task['title']} "
+        f"({task['priority']}, {task['owner']}, {task['minutes']}m)"
+        f"{due_label}{blocked_label}{recurrence_label}"
+    )
+
+
 def cmd_list(store, _args: argparse.Namespace) -> int:
     tasks = store.list_tasks()
     if not tasks:
@@ -88,16 +109,33 @@ def cmd_list(store, _args: argparse.Namespace) -> int:
         return 0
 
     for task in tasks:
-        status = task["status"]
-        blocked = task.get("blocked_by") or []
-        blocked_label = f" blocked_by={blocked}" if blocked else ""
-        recurrence = task.get("recurrence")
-        recurrence_label = f" recurrence={recurrence}" if recurrence else ""
-        print(
-            f"#{task['id']} [{status}] {task['title']} "
-            f"({task['priority']}, {task['owner']}, {task['minutes']}m)"
-            f"{blocked_label}{recurrence_label}"
-        )
+        print(format_task_line(task))
+    return 0
+
+
+def cmd_search(store, args: argparse.Namespace) -> int:
+    tasks = store.search_tasks(args.query)
+    if not tasks:
+        print("No matching tasks.")
+        return 0
+    for task in tasks:
+        print(format_task_line(task))
+    return 0
+
+
+def cmd_overdue(store, _args: argparse.Namespace) -> int:
+    tasks = store.overdue_tasks()
+    if not tasks:
+        print("No overdue tasks.")
+        return 0
+    for task in tasks:
+        print(format_task_line(task))
+    return 0
+
+
+def cmd_archive(store, _args: argparse.Namespace) -> int:
+    archived = store.archive_done()
+    print(json.dumps({"archived": len(archived), "tasks": archived}, indent=2))
     return 0
 
 
@@ -121,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "add": cmd_add,
         "list": cmd_list,
+        "search": cmd_search,
+        "overdue": cmd_overdue,
+        "archive": cmd_archive,
         "done": cmd_done,
         "stats": cmd_stats,
     }

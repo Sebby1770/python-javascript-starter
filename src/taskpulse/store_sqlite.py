@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from itertools import count
 from pathlib import Path
 from threading import Lock
@@ -22,6 +22,8 @@ from .store import (
     normalise_tags,
     recurrence_period_elapsed,
     sync_done_and_status,
+    task_is_overdue,
+    task_matches_query,
     validate_due_date,
     validate_recurrence,
     validate_sprint,
@@ -283,7 +285,7 @@ class SqliteTaskStore:
     def get_stats(self) -> dict[str, object]:
         with self._lock:
             rows = self._conn().execute(
-                "SELECT priority, minutes, actual_minutes, done, sprint FROM tasks"
+                "SELECT * FROM tasks"
             ).fetchall()
             total = len(rows)
             completed = sum(1 for row in rows if bool(row["done"]))
@@ -292,13 +294,17 @@ class SqliteTaskStore:
             actual_minutes = 0
             by_sprint: dict[str, dict[str, object]] = {}
 
+            overdue_count = 0
             for row in rows:
-                minutes_by_priority[row["priority"]] += int(row["minutes"])
-                estimated_minutes += int(row["minutes"])
-                actual = int(row["actual_minutes"] if "actual_minutes" in row.keys() else 0)
+                task = self._row_to_task(row)
+                minutes_by_priority[task.priority] += task.minutes
+                estimated_minutes += task.minutes
+                actual = task.actual_minutes
                 actual_minutes += actual
+                if task_is_overdue(task):
+                    overdue_count += 1
 
-                sprint_key = row["sprint"] if row["sprint"] else "unassigned"
+                sprint_key = task.sprint or "unassigned"
                 if sprint_key not in by_sprint:
                     by_sprint[sprint_key] = {
                         "total": 0,
@@ -309,12 +315,12 @@ class SqliteTaskStore:
                     }
                 sprint_stats = by_sprint[sprint_key]
                 sprint_stats["total"] = int(sprint_stats["total"]) + 1
-                if bool(row["done"]):
+                if task.done:
                     sprint_stats["completed"] = int(sprint_stats["completed"]) + 1
                 else:
                     sprint_stats["pending"] = int(sprint_stats["pending"]) + 1
                 sprint_stats["estimated_minutes"] = (
-                    int(sprint_stats["estimated_minutes"]) + int(row["minutes"])
+                    int(sprint_stats["estimated_minutes"]) + task.minutes
                 )
                 sprint_stats["actual_minutes"] = (
                     int(sprint_stats["actual_minutes"]) + actual
@@ -328,7 +334,48 @@ class SqliteTaskStore:
                 "estimated_minutes": estimated_minutes,
                 "actual_minutes": actual_minutes,
                 "by_sprint": by_sprint,
+                "overdue_count": overdue_count,
             }
+
+    def search_tasks(self, query: str) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM tasks ORDER BY id ASC"
+            ).fetchall()
+            return [
+                self._row_to_dict(row)
+                for row in rows
+                if task_matches_query(self._row_to_task(row), query)
+            ]
+
+    def overdue_tasks(self, today: date | None = None) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM tasks ORDER BY id ASC"
+            ).fetchall()
+            return [
+                self._row_to_dict(row)
+                for row in rows
+                if task_is_overdue(self._row_to_task(row), today)
+            ]
+
+    def archive_done(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM tasks WHERE done = 1 ORDER BY id ASC"
+            ).fetchall()
+            archived = [self._row_to_dict(row) for row in rows]
+            if not archived:
+                return []
+            self._push_undo_locked("archive", {"tasks": copy.deepcopy(archived)})
+            self._conn().execute("DELETE FROM tasks WHERE done = 1")
+            self._log_activity_locked(
+                "task_archived",
+                None,
+                f"Archived {len(archived)} done tasks",
+            )
+            self._conn().commit()
+            return archived
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]:
         if not isinstance(tasks, list):
@@ -472,6 +519,44 @@ class SqliteTaskStore:
                     ),
                 )
                 result = {"undone": action.action, "task": task.to_dict()}
+
+            elif action.action == "archive":
+                archived = copy.deepcopy(action.payload["tasks"])
+                restored = [self._dict_to_task(item) for item in archived]
+                for task in restored:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO tasks (
+                            id, title, owner, priority, minutes, done, status,
+                            due_date, tags, blocked_by, recurrence, last_recurred_at,
+                            actual_minutes, started_at, sprint, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task.id,
+                            task.title,
+                            task.owner,
+                            task.priority,
+                            task.minutes,
+                            int(task.done),
+                            task.status,
+                            task.due_date,
+                            json.dumps(task.tags),
+                            json.dumps(task.blocked_by),
+                            task.recurrence,
+                            task.last_recurred_at,
+                            task.actual_minutes,
+                            task.started_at,
+                            task.sprint,
+                            task.created_at,
+                        ),
+                    )
+                max_id = conn.execute("SELECT MAX(id) AS max_id FROM tasks").fetchone()["max_id"]
+                self._ids = count(int(max_id or 0) + 1)
+                result = {
+                    "undone": "archive",
+                    "tasks": [task.to_dict() for task in restored],
+                }
 
             elif action.action == "import":
                 previous_tasks = copy.deepcopy(action.payload["tasks"])

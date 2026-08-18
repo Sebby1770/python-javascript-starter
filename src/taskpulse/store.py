@@ -24,6 +24,7 @@ VALID_ACTIVITY_EVENTS = {
     "task_imported",
     "time_tracked",
     "undo",
+    "task_archived",
 }
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAX_ACTIVITY_EVENTS = 50
@@ -122,6 +123,12 @@ class TaskStoreProtocol(Protocol):
     def update_task(self, task_id: int, fields: dict[str, object]) -> dict[str, object]: ...
 
     def get_stats(self) -> dict[str, object]: ...
+
+    def search_tasks(self, query: str) -> list[dict[str, object]]: ...
+
+    def overdue_tasks(self, today: date | None = None) -> list[dict[str, object]]: ...
+
+    def archive_done(self) -> list[dict[str, object]]: ...
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]: ...
 
@@ -286,6 +293,20 @@ def apply_task_fields(task: Task, fields: dict[str, object]) -> None:
             task.status = "todo"
 
     task.done, task.status = sync_done_and_status(done=task.done, status=task.status)
+
+
+def task_matches_query(task: Task, query: str) -> bool:
+    needle = query.strip().lower()
+    if not needle:
+        return True
+    haystacks = [task.title, task.owner, *task.tags]
+    return any(needle in part.lower() for part in haystacks)
+
+
+def task_is_overdue(task: Task, today: date | None = None) -> bool:
+    if task.done or not task.due_date:
+        return False
+    return date.fromisoformat(task.due_date) < (today or date.today())
 
 
 def is_blocked(task: Task, tasks_by_id: dict[int, Task]) -> bool:
@@ -546,7 +567,42 @@ class TaskStore:
                 "estimated_minutes": estimated_minutes,
                 "actual_minutes": actual_minutes,
                 "by_sprint": by_sprint,
+                "overdue_count": sum(
+                    1 for task in self._tasks if task_is_overdue(task)
+                ),
             }
+
+    def search_tasks(self, query: str) -> list[dict[str, object]]:
+        with self._lock:
+            return [
+                task.to_dict()
+                for task in self._tasks
+                if task_matches_query(task, query)
+            ]
+
+    def overdue_tasks(self, today: date | None = None) -> list[dict[str, object]]:
+        with self._lock:
+            return [
+                task.to_dict()
+                for task in self._tasks
+                if task_is_overdue(task, today)
+            ]
+
+    def archive_done(self) -> list[dict[str, object]]:
+        with self._lock:
+            archived = [task.to_dict() for task in self._tasks if task.done]
+            if not archived:
+                return []
+            self._push_undo_locked("archive", {"tasks": copy.deepcopy(archived)})
+            archived_ids = {int(item["id"]) for item in archived}
+            self._tasks = [task for task in self._tasks if task.id not in archived_ids]
+            self._log_activity_locked(
+                "task_archived",
+                None,
+                f"Archived {len(archived)} done tasks",
+            )
+            self._save_locked()
+            return archived
 
     def import_tasks(self, tasks: list[dict[str, object]]) -> list[dict[str, object]]:
         if not isinstance(tasks, list):
@@ -630,6 +686,21 @@ class TaskStore:
                 result = {
                     "undone": "import",
                     "tasks": [task.to_dict() for task in self._tasks],
+                }
+
+            elif action.action == "archive":
+                archived = copy.deepcopy(action.payload["tasks"])
+                restored = [self._task_from_dict(item) for item in archived]
+                existing_ids = {task.id for task in self._tasks}
+                for task in restored:
+                    if task.id not in existing_ids:
+                        self._tasks.append(task)
+                        existing_ids.add(task.id)
+                self._tasks.sort(key=lambda item: item.id)
+                self._ids = count(max((task.id for task in self._tasks), default=0) + 1)
+                result = {
+                    "undone": "archive",
+                    "tasks": [task.to_dict() for task in restored],
                 }
 
             else:

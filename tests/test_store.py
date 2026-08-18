@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from taskpulse.store import (
@@ -168,6 +169,7 @@ class TaskStoreTest(unittest.TestCase):
         )
         self.assertEqual(stats["estimated_minutes"], 60)
         self.assertEqual(stats["actual_minutes"], 0)
+        self.assertEqual(stats["overdue_count"], 0)
 
     def test_add_task_with_sprint_and_time_tracking_fields(self):
         store = TaskStore()
@@ -376,6 +378,68 @@ class TaskStoreTest(unittest.TestCase):
             self.assertEqual(tasks[0]["title"], created["title"])
             self.assertEqual(tasks[0]["tags"], ["db"])
             self.assertEqual(tasks[0]["status"], "doing")
+
+    def test_search_tasks_matches_title_owner_and_tags(self):
+        store = TaskStore()
+        store.add_task(title="Ship API docs", owner="Seb", tags=["docs"])
+        store.add_task(title="Polish UI", owner="Frontend", tags=["frontend"])
+
+        titles = [task["title"] for task in store.search_tasks("api")]
+        self.assertEqual(titles, ["Ship API docs"])
+        self.assertEqual(
+            [task["title"] for task in store.search_tasks("frontend")],
+            ["Polish UI"],
+        )
+        self.assertEqual(len(store.search_tasks("")), 2)
+
+    def test_overdue_tasks_ignore_done_and_undated_items(self):
+        store = TaskStore()
+        store.add_task(title="Late", due_date="2026-01-01")
+        store.add_task(title="Later still", due_date="2026-01-02")
+        done = store.add_task(title="Finished late", due_date="2026-01-01")
+        store.update_task(done["id"], {"status": "done"})
+        store.add_task(title="Future", due_date="2099-01-01")
+        store.add_task(title="No date")
+
+        overdue = store.overdue_tasks(today=date(2026, 6, 1))
+        self.assertEqual(
+            [task["title"] for task in overdue],
+            ["Late", "Later still"],
+        )
+        self.assertEqual(store.get_stats()["overdue_count"], 2)
+
+    def test_archive_done_removes_completed_tasks_and_can_undo(self):
+        store = TaskStore()
+        keep = store.add_task(title="Keep me")
+        done = store.add_task(title="Archive me")
+        store.update_task(done["id"], {"status": "done"})
+
+        archived = store.archive_done()
+        self.assertEqual([task["title"] for task in archived], ["Archive me"])
+        self.assertEqual([task["id"] for task in store.list_tasks()], [keep["id"]])
+
+        undone = store.undo_last()
+        self.assertEqual(undone["undone"], "archive")
+        self.assertEqual(
+            [task["title"] for task in store.list_tasks()],
+            ["Keep me", "Archive me"],
+        )
+
+    def test_sqlite_search_overdue_and_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(db_path=Path(temp_dir) / "tasks.db")
+            store.import_tasks([])
+            store.add_task(title="API work", tags=["api"], due_date="2026-01-01")
+            done = store.add_task(title="Done API", tags=["api"])
+            store.update_task(done["id"], {"status": "done"})
+
+            self.assertEqual(len(store.search_tasks("api")), 2)
+            self.assertEqual(len(store.overdue_tasks(today=date(2026, 6, 1))), 1)
+            archived = store.archive_done()
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(len(store.list_tasks()), 1)
+            store.undo_last()
+            self.assertEqual(len(store.list_tasks()), 2)
 
 
 class ValidationHelpersTest(unittest.TestCase):

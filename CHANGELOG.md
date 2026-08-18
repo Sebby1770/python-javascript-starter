@@ -2,6 +2,20 @@
 
 All notable changes to TaskPulse are documented in this file.
 
+## [5.0.0] - 2026-08-19
+
+### Added
+
+- `search_tasks()` plus `GET /api/tasks?q=` for title, owner, and tag search.
+- `overdue_tasks()` plus `GET /api/tasks/overdue` for incomplete tasks past their due date.
+- `archive_done()` plus `POST /api/tasks/archive` to clear completed work, with undo.
+- `overdue_count` on `get_stats()`.
+- CLI commands: `search`, `overdue`, and `archive`.
+
+### Changed
+
+- Package version aligned to `5.0.0` across Python, npm, and OpenAPI.
+
 ## [4.0.0] - 2026-07-05
 
 ### Added
